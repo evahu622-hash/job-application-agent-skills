@@ -6,6 +6,7 @@
 
 1. [下载 ZIP](https://github.com/evahu622-hash/job-application-agent-skills/archive/refs/heads/main.zip)，解压后用 Codex 打开整个文件夹；也可以运行 `git clone https://github.com/evahu622-hash/job-application-agent-skills.git`。四个 Skills 位于 `.agents/skills/`，需要连同仓库中的 `spec.md` 和 `assistant.py` 一起使用。若当前会话未识别新 Skills，重新打开项目或新建会话。
 2. 按 [SETUP.md](SETUP.md) 完成首次配置：放入自己的原版简历，填写岗位范围和固定答案，建立并核对事实库，连接可操作的浏览器，在各目标站点完成首次登录。
+   也可直接复制 [交给 Agent 完成安装的提示词](SETUP.md#6-交给-agent-完成安装的提示词)，让 Agent 负责配置与首次试跑。
 3. 运行 `python3 -m unittest -v test_assistant.py`。需要 Python 3.10+；测试只验证本地状态逻辑。
 4. 在 Codex 中调用 `$job-scout` 找岗，选定 `job_id` 后调用 `$resume-tailor`，最后调用 `$job-apply` 准备真实申请。需要串联时调用 `$job-run`。
 
