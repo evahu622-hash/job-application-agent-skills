@@ -1,0 +1,23 @@
+# Copy to private/targets.yaml, then replace every placeholder.
+# The Skills read this file; assistant.py does not parse it.
+roles:
+  include:
+    - "replace-with-target-title"
+  exclude:
+    - "replace-with-excluded-title-or-remove"
+locations:
+  countries:
+    - "replace-with-country"
+  cities: []
+  remote: "unknown"
+languages:
+  accepted:
+    - "replace-with-working-language"
+work_authorization: "unknown"
+sponsorship_needed: "unknown"
+minimum_salary: "unknown"
+shortlist_score_threshold: 75
+sources:
+  - name: "replace-with-employer-or-ATS"
+    url: "https://example.com/careers"
+    scan_every_days: 7

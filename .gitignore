@@ -1,0 +1,13 @@
+/private/
+/jobs/
+/runs/
+/jobs.csv
+/*.html
+/dry_run_*.md
+/real_run_*.md
+*.docx
+*.xlsx
+*.pdf
+__pycache__/
+*.pyc
+.DS_Store
