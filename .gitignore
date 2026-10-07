@@ -11,3 +11,15 @@
 __pycache__/
 *.pyc
 .DS_Store
+# Personal outputs written outside the default folders (dashboard --out,
+# render_resume output_dir, copied Codex logs, saved test output).
+dashboard*.html
+preview-*.png
+manifest.json
+*.jsonl
+*.log
+# Claude Code reads project Skills from .claude/skills, a relative symlink to
+# .agents/skills. Track only that link; keep local Claude settings out of Git.
+!/.claude/
+/.claude/*
+!/.claude/skills

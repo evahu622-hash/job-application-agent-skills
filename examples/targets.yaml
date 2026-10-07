@@ -1,23 +1,60 @@
 # Copy to private/targets.yaml, then replace every placeholder.
 # The Skills read this file; assistant.py does not parse it.
+# Everything below is a fictional example.
+
 roles:
   include:
-    - "replace-with-target-title"
-  exclude:
+    - "replace-with-target-title"          # e.g. "Product Manager"
+  exclude:                                  # excluded role families (hard gate: excluded_roles)
     - "replace-with-excluded-title-or-remove"
+
 locations:
   countries:
     - "replace-with-country"
-  cities: []
-  remote: "unknown"
+  cities: []                                # empty = any city in the countries above
+  work_models: ["remote", "hybrid", "onsite"]   # delete the models you do not accept
+
 languages:
-  accepted:
-    - "replace-with-working-language"
-work_authorization: "unknown"
-sponsorship_needed: "unknown"
-minimum_salary: "unknown"
-shortlist_score_threshold: 75
+  accepted:                                 # languages you can work in
+    - "English"
+  reject_if_required:                       # JD makes one of these mandatory -> hard gate unmet
+    - "replace-with-language-you-cannot-work-in"
+  do_not_reject:                            # JD asks for one of these -> fit gap only, never a gate
+    - "replace-with-language-you-are-still-learning"
+  # A mandatory language in none of these lists is "unknown": the agent asks you.
+
+# Only the gates listed here can block a job. A gate the JD says nothing about
+# counts as met. Everything else a JD asks for (tools, methods, "preferred"
+# years, industry experience) is a fit gap: it lowers the score and is shown
+# to you, but does not block the shortlist.
+hard_gates:
+  - location               # locations.countries / cities / work_models
+  - language               # languages.*
+  - work_authorization     # JD explicitly excludes your situation (e.g. "no visa sponsorship")
+  - salary_floor           # only when the JD advertises a salary below minimum_salary
+  - excluded_roles         # roles.exclude
+  - mandatory_credentials  # explicitly mandatory licence, degree or security clearance you do not hold
+  - recency                # posted more than recency_days ago; unknown dates never block; remove to only show the age
+
+recency_days: 7
+work_authorization: "unknown"     # e.g. "citizen of country X; needs a visa elsewhere"
+sponsorship_needed: "unknown"     # yes | no | unknown
+minimum_salary: "unknown"         # e.g. "60000 EUR per year"; unknown = no salary gate
+# scoring: "optional — describe your own model or point to a file in private/; default rubric is in job-scout"
+shortlist_score_threshold: 75     # 0-100; shortlisted: at or above it, no unmet gate, and no unknown gate other than recency
+
 sources:
-  - name: "replace-with-employer-or-ATS"
-    url: "https://example.com/careers"
+  # ats: greenhouse | lever | ashby | personio -> public ATS API, no browser needed
+  # ats: browser -> any other careers page or job board; needs an interactive session
+  - name: "Example Company A"
+    url: "https://job-boards.greenhouse.io/example-company-a"
+    ats: greenhouse
+    scan_every_days: 7
+  - name: "Example Company B"
+    url: "https://jobs.lever.co/example-company-b"
+    ats: lever
+    scan_every_days: 7
+  - name: "Example job board"
+    url: "https://jobs.example.com/search?q=product+manager"
+    ats: browser
     scan_every_days: 7

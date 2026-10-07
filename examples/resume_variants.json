@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "master": "private/source/master_resume.docx",
+  "upload_filename": "Jane_Doe_CV.pdf",
+  "output_dir": "private/resume_variants/build",
+  "renderer": {
+    "soffice": "soffice",
+    "font_replacements": {
+      "Calibri": "Carlito",
+      "Cambria": "Caladea"
+    },
+    "timeout_seconds": 180
+  },
+  "metadata": {
+    "title": "Jane Doe - CV",
+    "author": "Jane Doe"
+  },
+  "checks": {
+    "expected_pages": 2,
+    "min_images": 0,
+    "min_word_coverage": 0.995,
+    "required_phrases": ["Jane Doe", "Example Analytics GmbH"]
+  },
+  "variants": [
+    {
+      "id": "master",
+      "role_family": "general",
+      "description": "Master resume without edits; fallback when no role-specific variant fits.",
+      "edits": []
+    },
+    {
+      "id": "product-analytics",
+      "role_family": "product manager - data / analytics products",
+      "description": "Headline leads with the analytics platform work.",
+      "edits": [
+        {
+          "paragraph_contains": "Product Manager | B2B SaaS",
+          "old": "Product Manager | B2B SaaS",
+          "new": "Product Manager | B2B SaaS & Analytics Platforms",
+          "fact_ids": ["F01"],
+          "reason": "F01: owned the analytics dashboard product at Example Analytics GmbH."
+        }
+      ]
+    }
+  ]
+}
