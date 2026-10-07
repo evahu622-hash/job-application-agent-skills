@@ -128,14 +128,19 @@ class EditEngineTest(unittest.TestCase):
         with self.assertRaisesRegex(GuardError, "found 2"):  # overlapping matches count too
             apply_edit(master, edit("aaa", "aa", "x"))
 
-    def test_text_box_paragraph_and_its_anchor_paragraph_are_refused(self):
+    def test_text_box_edits_are_refused_but_anchor_paragraph_own_runs_are_editable(self):
         box = f"<w:r><w:pict><w:txbxContent>{para(run('Sidebar text'))}</w:txbxContent></w:pict></w:r>"
         master = document(f'<w:p>{run("Headline ")}{box}{run("Title")}</w:p>', para(run("Body")))
         self.assertEqual(["Headline Title", "Sidebar text", "Body"], texts(master))
         with self.assertRaisesRegex(GuardError, "inside a text box"):
             apply_edit(master, edit("Sidebar", "Sidebar", "Side"))
-        with self.assertRaisesRegex(GuardError, "contains a text box"):
+        with self.assertRaisesRegex(GuardError, "straddles a text box"):
             apply_edit(master, edit("Headline Title", "Headline Title", "New Title"))
+        anchor_edit = edit("Headline Title", "Title", "New Title")
+        anchored, anchor_index = apply_edit(master, anchor_edit)
+        self.assertEqual(["Headline New Title", "Sidebar text", "Body"], texts(anchored))
+        self.assertIn(box, anchored)  # the text box bytes are untouched
+        check_invariant(master, anchored, [anchor_edit], [anchor_index])
         change = edit("Body", "Body", "Text")
         result, index = apply_edit(master, change)
         self.assertEqual(["Headline Title", "Sidebar text", "Text"], texts(result))

@@ -75,7 +75,7 @@ python3 assistant.py list-ats https://job-boards.greenhouse.io/公司名
 1. 编辑 `private/resume_variants/variants.json`：
    - `master`：DOCX 母版路径（相对仓库根目录）；`upload_filename`：上传给招聘方时的文件名，如 `Jane_Doe_CV.pdf`；`metadata`：PDF 的标题和作者。
    - `checks`：期望页数、最少图片数、词语覆盖率下限（默认 0.995）、必须出现的短语。
-   - `variants`：每个版本有 `id`（小写字母、数字、连字符）、`role_family`、`description` 和 `edits`。`edits` 为空就是母版本身；建议保留一个 `role_family` 为 `general` 的母版版本，没有合适职位类型时兜底。每处替换写 `paragraph_contains`（只能匹配母版中的一个段落，不能是文本框或包含文本框的段落）、`old`（在该段落中只出现一次）、`new`、`fact_ids`（来自 `career_facts.md`）和 `reason`。只能替换文字，不能增删段落。写法参考 `examples/resume_variants.json` 中的 `product-analytics` 版本。
+   - `variants`：每个版本有 `id`（小写字母、数字、连字符）、`role_family`、`description` 和 `edits`。`edits` 为空就是母版本身；建议保留一个 `role_family` 为 `general` 的母版版本，没有合适职位类型时兜底。每处替换写 `paragraph_contains`（只能匹配母版中的一个段落，且不能是文本框里的段落；包含文本框（例如照片）的段落可以改，但 `old` 不能跨过文本框）、`old`（在该段落中只出现一次）、`new`、`fact_ids`（来自 `career_facts.md`）和 `reason`。只能替换文字，不能增删段落。写法参考 `examples/resume_variants.json` 中的 `product-analytics` 版本。
    - **`new` 必须完全由所引事实支持**：日期、数字、雇主、职位和技能说法与事实一致；团队或公司成果不写成个人成果，计划中的工作不写成已完成；不加入事实里没有的说法。脚本只检查事实 ID 不为空，这一条要你（和 `resume-tailor`）逐条核对。
    - `output_dir` 保持默认（`private/resume_variants/build`）：它必须在仓库内，而 `preflight --variants` 只接受 `private/` 下的 manifest。
 2. 构建：

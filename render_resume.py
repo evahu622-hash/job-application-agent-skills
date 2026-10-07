@@ -231,8 +231,6 @@ def apply_edit(xml: str, edit: dict) -> tuple[str, int]:
     paragraph = paragraphs[index]
     require(paragraph.depth == 0,
             f"paragraph_contains {short(anchor)!r} is inside a text box (nested w:p); edit refused")
-    require(not paragraph.nested,
-            f"paragraph_contains {short(anchor)!r} contains a text box or frame (nested w:p); edit refused")
     count = occurrences(texts[index], old)
     require(count == 1, f"old {short(old)!r} must occur exactly once in its paragraph; found {count}")
     begin = texts[index].find(old)
@@ -250,6 +248,11 @@ def apply_edit(xml: str, edit: dict) -> tuple[str, int]:
         else:  # later runs lose the consumed part
             replaced = text[finish - low:]
         changes.append((run.start(), run.end(), t_element(run.group("attrs"), replaced)))
+    # A paragraph may anchor a text box or frame (e.g. a photo). Its own runs are
+    # editable, but an edit must not straddle the nested paragraph(s) in between.
+    if paragraph.nested and changes:
+        require(not re.search(r"<w:p[\s>/]", xml[changes[0][0]:changes[-1][1]]),
+                f"old {short(old)!r} straddles a text box or frame inside its paragraph; edit refused")
     for start, end, element in reversed(changes):
         xml = xml[:start] + element + xml[end:]
     return xml, index

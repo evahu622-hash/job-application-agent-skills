@@ -121,7 +121,7 @@ python3 dashboard.py [--root DIR] [--out PATH] [--title TEXT] [--report PATH.md]
 
 - 使用者在普通终端用 `render_resume.py` 把 DOCX 母版构建为少量版本（按职位类型区分），逐个查看 PDF 和预览图后批准。LibreOffice 无法在 Codex 沙箱内运行，所以 Agent 会话里**不渲染、不重排**简历。
 - 每个版本只能对母版做声明过的文字替换，每处替换带事实 ID 和理由。替换后的文字必须完全由这些事实支持：日期、数字、雇主、职位和技能说法与事实一致；团队或公司成果与个人成果分开，计划中的工作与已完成的工作分开；不引入事实里没有的说法。`render_resume.py` 只检查事实 ID 不为空，内容是否忠于事实由起草者和 `resume-tailor` 逐条核对。
-- 构建时直接修改 `word/document.xml` 文本，其他内容逐字节保留，并核对“除被替换段落外，所有段落文字与母版一致”。文本框里的段落和包含文本框的段落都不能改。
+- 构建时直接修改 `word/document.xml` 文本，其他内容逐字节保留，并核对“除被替换段落外，所有段落文字与母版一致”。文本框里的段落不能改；包含文本框（例如照片锚点）的段落只能改它自己的文字，而且替换不能跨过文本框。
 - 渲染时按 `font_replacements` 把 DOCX 声明的字体映射到已安装的同尺寸字体，避免默认回退字体把 fi/fl 连字提取成乱码。检查项：页数、未加密、字体全部嵌入（结果里列出实际嵌入的字体名；映射目标没出现在 PDF 里时给出警告）、图片数、无连字字符和 `(cid:` 乱码、母版词语覆盖率、必含短语。任何检查失败的版本状态为 `failed`，不能批准。
 - LibreOffice 每次输出的 PDF 字节都不同。因此任何一次实际重建（`--force`，或修改 edits、`renderer`、`metadata`、`checks`，或升级 LibreOffice）都会生成新 PDF，状态回到 `draft`，批准作废，构建时会提示。重新批准后，要对已经准备过简历的岗位重新运行 `resume-tailor`，否则 preflight 以 `Resume is not an approved resume variant` 拦截。只改 `role_family` 或 `description` 不会重建，manifest 会同步更新。
 - `resume-tailor` 按职位类型选一个 `approved` 版本（没有合适的职位类型时，可用 `role_family: general` 的已批准版本兜底，并在计划中说明），复制到 `jobs/JOB_ID/resume.pdf` 和 `jobs/JOB_ID/upload/<upload_filename>`，并写计划、改动和核对记录。没有任何已批准版本、或改动与事实不符时，暂停并请使用者修改或构建/批准版本。
