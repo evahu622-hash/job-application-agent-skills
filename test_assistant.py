@@ -543,9 +543,9 @@ class AtsTest(unittest.TestCase):
         gone = fake_fetch({PERSONIO_URL: PERSONIO_XML.replace(b"<id>123</id>", b"<id>999</id>")})
         personio_dir = self.root / "jobs" / "personio-exampleco-123"
         result = fetch_ats("personio:exampleco:123", personio_dir, fetch=gone, now=self.NOW)
-        self.assertEqual(("closed", "absent from the board listing"),
-                         (result["source_status"], result["closed_reason"]))
-        self.assertFalse((personio_dir / "jd.txt").exists())
+        self.assertEqual(("closed", "absent from the board listing", False),
+                         (result["source_status"], result["closed_reason"], result["saved"]))
+        self.assertFalse(personio_dir.exists())  # a never-saved lead creates no jobs/ folder
 
     def test_network_error_blocks_without_writing(self):
         failing = fake_fetch({GH_JOB_URL: GuardError("ATS API answered HTTP 503")})

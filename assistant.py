@@ -912,7 +912,11 @@ def fetch_ats(
             "source_status": "closed", "closed_reason": str(reason), **kept, **identity,
             "fetched_at": fetched_at, "api_url": api_url,
         }
-        write_json(source_path, closed)
+        # A lead that was never saved stays out of jobs/: report it, create nothing.
+        if previous or (job_dir / "jd.txt").is_file():
+            write_json(source_path, closed)
+        else:
+            closed["saved"] = False
         return closed
     text = html_to_text(fields["html"])
     if not text.strip():
