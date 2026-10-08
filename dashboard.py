@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import base64
 import csv
+import fnmatch
 import hashlib
 import html
 import json
@@ -31,10 +32,14 @@ MAX_FILES_PER_DIR = 200
 MAX_MD_DEPTH = 10
 WARNING = "contains personal data; do not publish"
 MANIFEST = Path("private/resume_variants/build/manifest.json")
-SETUP_FILES = (
-    "private/targets.yaml", "private/career_facts.md", "private/answers.md",
-    "private/resume_variants/variants.json",
-)
+SETUP_FILES = {  # private config file -> the examples/ template it is copied from
+    "private/targets.yaml": "examples/targets.yaml",
+    "private/career_facts.md": "examples/career_facts.md",
+    "private/answers.md": "examples/answers.md",
+    "private/resume_variants/variants.json": "examples/resume_variants.json",
+}
+VARIANTS_CONFIG = "private/resume_variants/variants.json"
+PLACEHOLDER = b"replace-with-"
 FILE_ORDER = (
     "jd.md", "jd.txt", "source.json", "fit.md", "form.json", "resume-plan.md",
     "resume-diff.md", "fact-check.md", "resume.pdf", "pre-submit.json", "application.json",
@@ -52,6 +57,14 @@ BINARY_TYPES = {
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 }
 TRIAL_SUFFIXES = {".md", ".txt", ".log", ".json"}
+# Run documents shown first, in this order; everything else is grouped by subfolder.
+KEY_RUN_DOCS = (
+    "REPORT*.md", "decision-log*.md", "digest*.md", "status-summary*.md", "fact-confirmation*.md", "trial-plan*.md",
+)
+# A trial stage STEM writes STEM_events.jsonl (or STEM_tui_rollout.jsonl / STEM.jsonl) next to
+# STEM_prompt.txt, STEM_last.md and STEM.time.
+LOG_SUFFIXES = ("_events.jsonl", "_tui_rollout.jsonl", ".jsonl")
+STAGE_FILES = (("prompt", "_prompt.txt"), ("last", "_last.md"), ("time", ".time"))
 TONES = {
     "active_verified": "ok", "closed": "none", "blocked": "bad", "unknown": "warn",
     "discovered": "none", "submitted_confirmed": "ok", "submission_unknown": "bad",
@@ -64,6 +77,12 @@ EXEC_TYPES = {
     "item.started", "item.updated", "item.completed",
 }
 ROLLOUT_TYPES = {"session_meta", "response_item", "event_msg", "turn_context"}
+CLAUDE_TYPES = {"system", "assistant", "user", "result"}
+LOG_LABELS = {
+    "exec": "codex exec --json 事件流", "rollout": "Codex 交互会话 rollout", "claude": "Claude Code stream-json",
+}
+# What a record with unexpected field types can raise; such a record is skipped and counted.
+MALFORMED = (AttributeError, KeyError, TypeError, ValueError, RecursionError)
 
 
 def esc(value: object) -> str:
@@ -514,7 +533,7 @@ def file_body(page: Page, path: Path, data: bytes) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Codex logs: `codex exec --json` events and interactive TUI rollouts.
+# Agent logs: `codex exec --json` events, interactive Codex TUI rollouts and Claude Code stream-json.
 
 def read_jsonl(path: Path) -> tuple[list[dict], int]:
     records: list[dict] = []
@@ -525,7 +544,7 @@ def read_jsonl(path: Path) -> tuple[list[dict], int]:
                 continue
             try:
                 value = json.loads(line)
-            except ValueError:
+            except (ValueError, RecursionError):
                 bad += 1
                 continue
             if isinstance(value, dict):
@@ -542,23 +561,34 @@ def log_kind(records: list[dict]) -> str | None:
             return "exec"
         if kind in ROLLOUT_TYPES and isinstance(record.get("payload"), dict):
             return "rollout"
+        if kind in CLAUDE_TYPES and (isinstance(record.get("message"), dict) or "session_id" in record):
+            return "claude"
     return None
 
 
+def well_formed(record: dict) -> bool:
+    """Record types are strings (or absent one level down), so set lookups on them cannot raise."""
+    nested = [record.get(key) for key in ("payload", "item", "message")]
+    return isinstance(record.get("type"), str) and all(
+        not isinstance(value, dict) or isinstance(value.get("type"), (str, type(None))) for value in nested
+    )
+
+
 def parse_codex_log(path: Path) -> dict | None:
-    """Return a timeline for a Codex JSONL log, or None for other JSONL files."""
+    """Return a timeline for a Codex (or Claude Code stream-json) JSONL log, or None for other JSONL files.
+
+    Records with unexpected field types are skipped and counted in log["skipped"]; they never raise.
+    """
     records, bad = read_jsonl(path)
-    kind = log_kind(records)
+    good = [record for record in records if well_formed(record)]
+    kind = log_kind(good)
     if kind is None:
         return None
     log = {
         "kind": kind, "name": path.name, "path": str(path), "meta": {}, "events": [], "usage": {},
-        "reasoning": 0, "bad_lines": bad,
+        "reasoning": 0, "bad_lines": bad, "skipped": len(records) - len(good),
     }
-    if kind == "exec":
-        parse_exec(records, log)
-    else:
-        parse_rollout(records, log)
+    {"exec": parse_exec, "rollout": parse_rollout, "claude": parse_claude}[kind](good, log)
     return log
 
 
@@ -671,26 +701,34 @@ def parse_exec(records: list[dict], log: dict) -> None:
     turns = 0
     for record in records:
         kind = record.get("type")
-        if kind == "thread.started":
-            log["meta"]["thread_id"] = record.get("thread_id", "")
-        elif kind == "turn.started":
-            turns += 1
-            event(log, "turn", "回合", f"回合 {turns} 开始")
-        elif kind == "turn.completed":
-            add_usage(log["usage"], record.get("usage"))
-            event(log, "turn", "用量", f"回合 {turns} 结束 · {usage_text(record.get('usage') or {})}")
-        elif kind == "turn.failed":
-            error = record.get("error")
-            event(log, "error", "错误", "回合失败", output=pretty(error.get("message") if isinstance(error, dict) else error))
-        elif kind == "error":
-            event(log, "error", "错误", str(record.get("message") or "error")[:200], output=pretty(record.get("message")))
-        elif kind in {"item.started", "item.updated"} and isinstance(record.get("item"), dict):
-            started[str(record["item"].get("id"))] = record["item"]
-        elif kind == "item.completed" and isinstance(record.get("item"), dict):
-            started.pop(str(record["item"].get("id")), None)
-            exec_item(log, record["item"])
+        try:
+            if kind == "thread.started":
+                log["meta"]["thread_id"] = record.get("thread_id", "")
+            elif kind == "turn.started":
+                turns += 1
+                event(log, "turn", "回合", f"回合 {turns} 开始")
+            elif kind == "turn.completed":
+                add_usage(log["usage"], record.get("usage"))
+                event(log, "turn", "用量", f"回合 {turns} 结束 · {usage_text(record.get('usage') or {})}")
+            elif kind == "turn.failed":
+                error = record.get("error")
+                event(log, "error", "错误", "回合失败",
+                      output=pretty(error.get("message") if isinstance(error, dict) else error))
+            elif kind == "error":
+                event(log, "error", "错误", str(record.get("message") or "error")[:200],
+                      output=pretty(record.get("message")))
+            elif kind in {"item.started", "item.updated"} and isinstance(record.get("item"), dict):
+                started[str(record["item"].get("id"))] = record["item"]
+            elif kind == "item.completed" and isinstance(record.get("item"), dict):
+                started.pop(str(record["item"].get("id")), None)
+                exec_item(log, record["item"])
+        except MALFORMED:
+            log["skipped"] += 1
     for item in started.values():
-        exec_item(log, dict(item, status=item.get("status") or "in_progress"))
+        try:
+            exec_item(log, dict(item, status=item.get("status") or "in_progress"))
+        except MALFORMED:
+            log["skipped"] += 1
     log["meta"]["回合数"] = turns
 
 
@@ -777,36 +815,39 @@ def parse_rollout(records: list[dict], log: dict) -> None:
         if not isinstance(payload, dict):
             continue
         kind, sub, when = record.get("type"), payload.get("type"), clock(record.get("timestamp"))
-        if kind == "session_meta":
-            for key in ("id", "cli_version", "originator", "source", "cwd", "model_provider"):
-                if payload.get(key):
-                    log["meta"][key] = payload[key]
-        elif kind == "turn_context":
-            turns += 1
-            sandbox = payload.get("sandbox_policy")
-            sandbox = sandbox.get("type") if isinstance(sandbox, dict) else sandbox
-            context = [f"approval={payload['approval_policy']}"] if payload.get("approval_policy") else []
-            context += [f"sandbox={sandbox}"] if sandbox else []
-            context += [f"model={payload['model']}"] if payload.get("model") else []
-            log["meta"]["approval / sandbox"] = " · ".join(context)
-            event(log, "turn", "回合", " · ".join([f"回合 {turns}", *context]), time=when)
-        elif kind == "event_msg" and sub == "token_count":
-            info = payload.get("info")
-            if isinstance(info, dict) and isinstance(info.get("total_token_usage"), dict):
-                log["usage"] = dict(info["total_token_usage"])
-        elif kind == "event_msg" and sub in {"error", "stream_error"}:
-            message = payload.get("message")
-            event(log, "error", "错误", str(message or sub)[:200], time=when, output=pretty(message))
-        elif kind == "event_msg" and sub == "turn_aborted":
-            event(log, "error", "中断", f"回合中断：{payload.get('reason', '')}", time=when)
-        elif kind == "event_msg" and sub == "item_completed" and isinstance(payload.get("item"), dict):
-            item = payload["item"]
-            call = by_call.get(str(item.get("id")))
-            rollout_item(log, item, when, call, outputs.get(str(item.get("id"))))
-        elif kind == "response_item" and not has_items:
-            response_item(log, payload, when, calls)
-        elif kind == "response_item" and uncovered(payload, covered, by_call):
-            response_item(log, payload, when, calls)
+        try:
+            if kind == "session_meta":
+                for key in ("id", "cli_version", "originator", "source", "cwd", "model_provider"):
+                    if payload.get(key):
+                        log["meta"][key] = payload[key]
+            elif kind == "turn_context":
+                turns += 1
+                sandbox = payload.get("sandbox_policy")
+                sandbox = sandbox.get("type") if isinstance(sandbox, dict) else sandbox
+                context = [f"approval={payload['approval_policy']}"] if payload.get("approval_policy") else []
+                context += [f"sandbox={sandbox}"] if sandbox else []
+                context += [f"model={payload['model']}"] if payload.get("model") else []
+                log["meta"]["approval / sandbox"] = " · ".join(context)
+                event(log, "turn", "回合", " · ".join([f"回合 {turns}", *context]), time=when)
+            elif kind == "event_msg" and sub == "token_count":
+                info = payload.get("info")
+                if isinstance(info, dict) and isinstance(info.get("total_token_usage"), dict):
+                    log["usage"] = dict(info["total_token_usage"])
+            elif kind == "event_msg" and sub in {"error", "stream_error"}:
+                message = payload.get("message")
+                event(log, "error", "错误", str(message or sub)[:200], time=when, output=pretty(message))
+            elif kind == "event_msg" and sub == "turn_aborted":
+                event(log, "error", "中断", f"回合中断：{payload.get('reason', '')}", time=when)
+            elif kind == "event_msg" and sub == "item_completed" and isinstance(payload.get("item"), dict):
+                item = payload["item"]
+                call = by_call.get(str(item.get("id")))
+                rollout_item(log, item, when, call, outputs.get(str(item.get("id"))))
+            elif kind == "response_item" and not has_items:
+                response_item(log, payload, when, calls)
+            elif kind == "response_item" and uncovered(payload, covered, by_call):
+                response_item(log, payload, when, calls)
+        except MALFORMED:
+            log["skipped"] += 1
     log["meta"]["回合数"] = turns
 
 
@@ -950,6 +991,89 @@ def call_event(log: dict, payload: dict, when: str) -> dict:
     return event(log, "tool", "工具", title, time=when, detail=pretty(args))
 
 
+# Claude Code `--output-format stream-json`: system/init, assistant and user messages, then a result.
+
+def parse_claude(records: list[dict], log: dict) -> None:
+    tools: dict[str, dict] = {}
+    for record in records:
+        try:
+            claude_record(log, record, tools)
+        except MALFORMED:
+            log["skipped"] += 1
+
+
+def claude_record(log: dict, record: dict, tools: dict[str, dict]) -> None:
+    kind, when = record.get("type"), clock(record.get("timestamp"))
+    message = record.get("message") if isinstance(record.get("message"), dict) else {}
+    content = message.get("content")
+    if kind == "system" and record.get("subtype") == "init":
+        for key in ("session_id", "model", "claude_code_version", "permissionMode", "cwd"):
+            if record.get(key):
+                log["meta"][key] = record[key]
+    elif kind == "assistant":
+        for block in content if isinstance(content, list) else []:
+            block = block if isinstance(block, dict) else {}
+            if block.get("type") == "text":
+                event(log, "message", "Claude", "", time=when, markdown=str(block.get("text") or ""))
+            elif block.get("type") in ("thinking", "redacted_thinking"):
+                log["reasoning"] += 1
+            elif block.get("type") == "tool_use":
+                args = block.get("input") if isinstance(block.get("input"), dict) else {}
+                name = str(block.get("name") or "tool")
+                if name == "Bash" and args.get("command"):
+                    item = event(log, "command", "命令", str(args["command"]), time=when,
+                                 detail=str(args.get("description") or ""))
+                else:
+                    item = event(log, "tool", "工具", name, time=when, detail=pretty(block.get("input")))
+                tools[str(block.get("id"))] = item
+    elif kind == "user" and isinstance(content, str):
+        user_event(log, content, when)
+    elif kind == "user":
+        for block in content if isinstance(content, list) else []:
+            block = block if isinstance(block, dict) else {}
+            if block.get("type") == "text":
+                user_event(log, str(block.get("text") or ""), when)
+            elif block.get("type") == "tool_result":
+                text, code = output_text(block.get("content"))
+                item = tools.get(str(block.get("tool_use_id")))
+                if item is None:
+                    event(log, "tool", "输出", "未匹配的工具输出", time=when, output=text)
+                    continue
+                item["output"] = text
+                if code is not None and item["cat"] == "command":
+                    item["exit_code"] = code
+                if block.get("is_error") is True:
+                    item["status"] = "error"
+    elif kind == "result":
+        log["usage"] = claude_usage(record.get("usage"))
+        if isinstance(record.get("num_turns"), int):
+            log["meta"]["回合数"] = record["num_turns"]
+        ms, cost = record.get("duration_ms"), record.get("total_cost_usd")
+        parts = [
+            str(record.get("subtype") or "result"), duration_text(ms / 1000) if isinstance(ms, (int, float)) else "",
+            f"${cost:.4f}" if isinstance(cost, (int, float)) else "", usage_text(log["usage"]),
+        ]
+        failed = record.get("is_error") is True
+        event(log, "error" if failed else "turn", "结果", " · ".join(part for part in parts if part), time=when,
+              output=str(record.get("result") or "") if failed else "")
+
+
+def claude_usage(usage: object) -> dict:
+    """Claude counts cache reads and writes apart from input_tokens; fold them in, as Codex reports input."""
+    if not isinstance(usage, dict):
+        return {}
+
+    def number(key: str) -> int:
+        value = usage.get(key)
+        return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+    cached = number("cache_read_input_tokens")
+    return {
+        "input_tokens": number("input_tokens") + cached + number("cache_creation_input_tokens"),
+        "cached_input_tokens": cached, "output_tokens": number("output_tokens"),
+    }
+
+
 def log_counts(log: dict) -> Counter:
     counts: Counter = Counter()
     for item in log["events"]:
@@ -997,13 +1121,14 @@ def render_event(number: int, item: dict) -> str:
 
 def render_log(log: dict) -> str:
     counts = log_counts(log)
-    kind = "codex exec --json 事件流" if log["kind"] == "exec" else "Codex 交互会话 rollout"
-    meta = [f"<dt>类型</dt><dd>{esc(kind)}</dd>"]
+    meta = [f"<dt>类型</dt><dd>{esc(LOG_LABELS[log['kind']])}</dd>"]
     meta += [f"<dt>{esc(key)}</dt><dd><code>{esc(value)}</code></dd>" for key, value in log["meta"].items()]
     if log["usage"]:
         meta.append(f"<dt>Token</dt><dd>{esc(usage_text(log['usage']))}</dd>")
     if log["bad_lines"]:
         meta.append(f"<dt>无法解析</dt><dd>{log['bad_lines']} 行</dd>")
+    if log.get("skipped"):
+        meta.append(f"<dt>已跳过</dt><dd>{log['skipped']} records skipped（字段类型或结构不符合预期）</dd>")
     filters = [("all", "全部", len(log["events"])), ("command", "命令", counts["command"]),
                ("failed", "失败", sum(is_failed(item) for item in log["events"])),
                ("message", "消息", counts["message"]), ("file", "文件改动", counts["file"]),
@@ -1132,10 +1257,38 @@ def joined(counter: Counter) -> str:
     return " · ".join(f"{key} {value}" for key, value in counter.items())
 
 
+def setup_problems(root: Path, present: list[str]) -> list[str]:
+    """Private config that exists but is not filled in yet, and a master DOCX that variants.json names but lacks."""
+    same, placeholder = [], []
+    for name in present:
+        data = (root / name).read_bytes()
+        template = root / SETUP_FILES[name]
+        if template.is_file() and template.read_bytes() == data:
+            same.append(Path(name).name)
+        elif PLACEHOLDER in data:
+            placeholder.append(Path(name).name)
+    problems = [f"与 examples 模板相同：{'、'.join(same)}"] if same else []
+    problems += [f"仍含 {PLACEHOLDER.decode()} 占位：{'、'.join(placeholder)}"] if placeholder else []
+    if VARIANTS_CONFIG in present:
+        config = load_json_file(root / VARIANTS_CONFIG)
+        master = config.get("master") if isinstance(config, dict) else None
+        if not isinstance(config, dict):
+            problems.append("variants.json 无法解析")
+        elif not isinstance(master, str) or not master:
+            problems.append("variants.json 没有写 master")
+        elif not (root / Path(master).expanduser()).is_file():
+            problems.append(f"master DOCX 不存在：{master}")
+    return problems
+
+
 def overview_section(ctx: dict) -> str:
     root, rows, metas = ctx["root"], ctx["rows"], ctx["metas"]
     setup = [name for name in SETUP_FILES if (root / name).is_file()]
     missing = "、".join(Path(name).name for name in SETUP_FILES if name not in setup)
+    problems = setup_problems(root, setup)
+    setup_tone = progress_tone(len(setup), len(SETUP_FILES))
+    setup_tone = "warn" if problems and setup_tone == "ok" else setup_tone
+    setup_detail = "；".join(([f"缺少：{missing}"] if missing else []) + problems) or "私有配置齐全"
     variants = ctx["manifest"]["variants"] if ctx["manifest"] else []
     variant_status = Counter(str(v.get("status", "")) for v in variants if isinstance(v, dict))
     source_status = Counter(row.get("source_status", "") for row in rows)
@@ -1157,8 +1310,7 @@ def overview_section(ctx: dict) -> str:
     else:
         variant_tone = "ok" if variant_status["approved"] else "warn" if variants else "none"
     cards = [
-        stage("配置", progress_tone(len(setup), len(SETUP_FILES)), f"{len(setup)}/{len(SETUP_FILES)}",
-              f"缺少：{missing}" if missing else "私有配置齐全"),
+        stage("配置", setup_tone, f"{len(setup)}/{len(SETUP_FILES)}", setup_detail),
         stage("简历版本", variant_tone, f"{variant_status['approved']}/{len(variants)} 已批准",
               ctx["manifest_error"] or joined(variant_status) or "未找到 manifest.json"),
         stage("找岗", "ok" if rows else "warn" if n_jobs else "none", f"{n_jobs} 个岗位",
@@ -1175,7 +1327,7 @@ def overview_section(ctx: dict) -> str:
         stage("试跑日志", "none" if not logs else "warn" if totals["failed"] or totals["error"] else "ok",
               f"{len(logs)} 份日志",
               f"命令 {totals['command']} · 失败 {totals['failed']} · 错误 {totals['error']}"
-              if logs else "未提供 --trial-dir 或无 Codex 日志"),
+              if logs else "未提供 --trial-dir 或无 Codex / Claude Code 日志"),
         stage("测试", "bad" if "fail" in test_status else "ok" if test_status == {"pass"} else "warn" if tests else "none",
               f"{sum(status == 'pass' for _, status, _, _ in tests)}/{len(tests)} 通过",
               "；".join(detail for _, _, detail, _ in tests) or "未提供 --tests-log"),
@@ -1400,23 +1552,116 @@ def variant_card(page: Page, root: Path, variant: dict) -> str:
     )
 
 
+def key_doc_rank(rel: str) -> int | None:
+    """Position of a top-level run file in KEY_RUN_DOCS (case-insensitive), or None."""
+    if "/" in rel:
+        return None
+    name = rel.lower()
+    return next((k for k, pattern in enumerate(KEY_RUN_DOCS) if fnmatch.fnmatchcase(name, pattern.lower())), None)
+
+
+def run_group(page: Page, name: str, items: list[tuple[str, Path]]) -> str:
+    """One collapsed <details> per subfolder ("" = other top-level files); tabs drop the folder prefix."""
+    note = ""
+    if len(items) > MAX_FILES_PER_DIR:
+        note = f'<p class="note warn">共 {len(items)} 个文件，只显示前 {MAX_FILES_PER_DIR} 个。</p>'
+    prefix = len(name) + 1 if name else 0
+    views = [(rel[prefix:], file_view(page, path, rel)) for rel, path in items[:MAX_FILES_PER_DIR]]
+    return (
+        f'<details class="run-group"><summary><code>{esc(name + "/" if name else "根目录其他文件")}</code> '
+        f'<span class="muted small">{len(items)} 个文件</span></summary>{note}{page.filebox(views)}</details>'
+    )
+
+
 def runs_section(page: Page, ctx: dict) -> str:
     blocks = []
     for index, folder in enumerate(ctx["runs"]):
-        files = sorted(ordered_files(folder, ctx["skip"]), key=lambda pair: (pair[0] != "digest.md", pair[0]))
-        views = [(rel, file_view(page, path, rel)) for rel, path in files[:MAX_FILES_PER_DIR]]
+        files = ordered_files(folder, ctx["skip"])
+        key_docs: list[tuple[int, str, Path]] = []
+        groups: dict[str, list[tuple[str, Path]]] = {}
+        for rel, path in files:
+            rank = key_doc_rank(rel)
+            if rank is not None:
+                key_docs.append((rank, rel, path))
+            else:
+                groups.setdefault(rel.split("/", 1)[0] if "/" in rel else "", []).append((rel, path))
+        key_row = ""
+        if key_docs:
+            views = [(rel, file_view(page, path, rel)) for _, rel, path in sorted(key_docs)]
+            key_row = f'<div class="key-docs"><h4>关键文档</h4>{page.filebox(views)}</div>'
+        others = "".join(run_group(page, name, items) for name, items in sorted(groups.items()))
+        if others:
+            others = f'<div class="run-groups"><h4>其他文件（按文件夹）</h4>{others}</div>'
         blocks.append(
             f'<details class="card run"{" open" if index == 0 else ""}><summary><strong>{esc(folder.name)}</strong> '
-            f'<span class="muted small">{len(files)} 个文件</span></summary>{page.filebox(views)}</details>'
+            f'<span class="muted small">{len(files)} 个文件</span></summary>{key_row}{others}</details>'
         )
     content = "".join(blocks) or '<p class="muted">runs/ 下没有运行记录。</p>'
     return f'<section id="runs" class="block"><h2>运行记录</h2>{content}</section>'
 
 
+def log_stage(path: Path) -> dict:
+    """STEM_prompt.txt, STEM_last.md and STEM.time next to a log named STEM + one of LOG_SUFFIXES; {} if none."""
+    name = path.name
+    stem = next((name[: -len(suffix)] for suffix in LOG_SUFFIXES if name.endswith(suffix) and name != suffix), "")
+    stage: dict = {"stem": stem, "files": []}
+    for key, suffix in STAGE_FILES:
+        sibling = path.with_name(stem + suffix)
+        if stem and sibling.is_file() and sibling.stat().st_size <= MAX_EMBED_BYTES:
+            stage[key] = sibling.read_text(encoding="utf-8", errors="replace")
+            stage["files"].append(str(sibling))
+    return stage if stage["files"] else {}
+
+
+def parse_time(text: str) -> dict:
+    """`start …`, `end …` and `exit=N` lines of a STEM.time file; any other line is kept as a note."""
+    info: dict = {"start": "", "end": "", "exit": None, "notes": []}
+    for line in text.splitlines():
+        line = line.strip()
+        if match := re.fullmatch(r"(start|end)\s+(.+)", line):
+            info[match.group(1)] = match.group(2)
+        elif match := re.fullmatch(r"exit\s*[=:]\s*(-?\d+)", line):
+            info["exit"] = int(match.group(1))
+        elif line:
+            info["notes"].append(line)
+    return info
+
+
+def stage_html(stage: dict) -> str:
+    """Prompt, timing and final message of a trial stage, shown above its log timeline."""
+    if not stage:
+        return ""
+    facts = [f"<dt>阶段</dt><dd><code>{esc(stage['stem'])}</code></dd>"]
+    if "time" in stage:
+        timing = parse_time(stage["time"])
+        facts += [f"<dt>{label}</dt><dd>{esc(timing[key])}</dd>" for key, label in (("start", "开始"), ("end", "结束"))
+                  if timing[key]]
+        code = timing["exit"]
+        if code is not None:
+            facts.append(f"<dt>退出码</dt><dd>{chip(f'exit {code}', 'ok' if code == 0 else 'bad')}</dd>")
+        facts += [f"<dt>备注</dt><dd>{esc(note)}</dd>" for note in timing["notes"]]
+    parts = [f'<dl class="kv">{"".join(facts)}</dl>']
+    if "prompt" in stage:
+        parts.append(f"<h4>提示词</h4>{pre(clip(stage['prompt']))}")
+    if "last" in stage:
+        parts.append(f'<h4>最终回复</h4><div class="md">{md_to_html(stage["last"])}</div>')
+    return f'<div class="stage-info">{"".join(parts)}</div>'
+
+
+def prompt_excerpt(stage: dict, limit: int = 80) -> str:
+    text = " ".join(str(stage.get("prompt") or "").split())
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
 def log_summary_row(log: dict) -> str:
     counts = log_counts(log)
+    stage = log.get("stage") or {}
+    step = (
+        f'<code>{esc(stage["stem"])}</code> <span class="muted small">{esc(prompt_excerpt(stage))}</span>'
+        if stage else ""
+    )
     cells = [
-        f"<code>{esc(log['name'])}</code>", log["kind"], log["meta"].get("回合数", 0), counts["command"],
+        f"<code>{esc(log['name'])}</code>", step, log["kind"], log["meta"].get("回合数", 0), counts["command"],
         chip(counts["failed"], "bad" if counts["failed"] else "ok"), counts["message"], counts["paths"],
         counts["tool"], counts["error"],
     ]
@@ -1430,22 +1675,24 @@ def trial_section(page: Page, ctx: dict) -> str:
         return ""
     if logs:
         summary = (
-            '<div class="table-wrap"><table class="data"><thead><tr><th>日志</th><th>类型</th><th>回合</th>'
-            "<th>命令</th><th>失败命令</th><th>消息</th><th>改动文件</th><th>工具</th><th>错误</th>"
+            '<div class="table-wrap"><table class="data"><thead><tr><th>日志</th><th>阶段 / 提示词</th><th>类型</th>'
+            "<th>回合</th><th>命令</th><th>失败命令</th><th>消息</th><th>改动文件</th><th>工具</th><th>错误</th>"
             '<th class="hide-sm">Token</th></tr></thead>'
             f'<tbody>{"".join(map(log_summary_row, logs))}</tbody></table></div>'
         )
     else:
-        summary = '<p class="muted">该目录没有 Codex JSONL 日志。</p>'
+        summary = '<p class="muted">该目录没有 Codex 或 Claude Code 的 JSONL 日志。</p>'
     details = "".join(
         f'<details class="card log"{" open" if index == 0 else ""}><summary><strong>{esc(log["name"])}</strong>'
-        f"</summary>{render_log(log)}</details>"
+        f"</summary>{stage_html(log.get('stage') or {})}{render_log(log)}</details>"
         for index, log in enumerate(logs)
     )
     parsed = {log["path"] for log in logs}
+    paired = {path for log in logs for path in (log.get("stage") or {}).get("files", [])}  # shown in the log panel
     files = [
         (rel, path) for rel, path in ordered_files(trial_dir, set())
-        if path.suffix.lower() in TRIAL_SUFFIXES or (path.suffix.lower() == ".jsonl" and str(path) not in parsed)
+        if str(path) not in paired and (
+            path.suffix.lower() in TRIAL_SUFFIXES or (path.suffix.lower() == ".jsonl" and str(path) not in parsed))
     ][:MAX_FILES_PER_DIR]
     others = f"<h3>试跑目录中的其他文件</h3>{page.filebox([(rel, file_view(page, p, rel)) for rel, p in files])}"
     return (
@@ -1465,13 +1712,28 @@ def tests_section(ctx: dict) -> str:
     return f'<section id="tests" class="block"><h2>测试</h2>{blocks}</section>'
 
 
-def report_section(ctx: dict) -> str:
-    if ctx["report"] is None:
+def report_label(path: Path) -> str:
+    """The first Markdown heading outside code fences, else the file name."""
+    fenced = False
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if _FENCE.match(line):
+            fenced = not fenced
+        elif not fenced and (heading := _HEADING.match(line)):
+            label = re.sub(r"[*`]", "", heading.group(2)).strip()
+            return (label if len(label) <= 60 else label[:60] + "…") or path.name
+    return path.name
+
+
+def report_section(page: Page, ctx: dict) -> str:
+    """Each --report file is a tab; the first one opens on load."""
+    reports = ctx["reports"]
+    if not reports:
         return ""
-    text = ctx["report"].read_text(encoding="utf-8", errors="replace")
+    note = esc(reports[0].name) if len(reports) == 1 else f"{len(reports)} 份"
+    views = [(report_label(path), file_view(page, path, path.name)) for path in reports]
     return (
-        f'<section id="report" class="block"><h2>报告与决策 <span class="muted small">{esc(ctx["report"].name)}'
-        f'</span></h2><div class="card md">{md_to_html(text)}</div></section>'
+        f'<section id="report" class="block"><h2>报告与决策 <span class="muted small">{note}</span></h2>'
+        f'<div class="card">{page.filebox(views)}</div></section>'
     )
 
 
@@ -1484,7 +1746,7 @@ def subdirs(folder: Path) -> list[Path]:
     return sorted(path for path in folder.iterdir() if path.is_dir() and not path.name.startswith("."))
 
 
-def collect(root: Path, out: Path, report: Path | None, trial_dir: Path | None, tests_logs: list[Path]) -> dict:
+def collect(root: Path, out: Path, reports: list[Path], trial_dir: Path | None, tests_logs: list[Path]) -> dict:
     fields, rows, csv_error = read_jobs_csv(root / "jobs.csv")
     dirs = {path.name: path for path in subdirs(root / "jobs")}
     metas = {name: job_meta(folder) for name, folder in dirs.items()}
@@ -1494,6 +1756,7 @@ def collect(root: Path, out: Path, report: Path | None, trial_dir: Path | None, 
     for _, path in ordered_files(trial_dir, set()) if trial_dir else []:
         log = parse_codex_log(path) if path.suffix.lower() == ".jsonl" else None
         if log is not None:
+            log["stage"] = log_stage(path)
             logs.append(log)
     tests = []
     for path in tests_logs:
@@ -1509,26 +1772,26 @@ def collect(root: Path, out: Path, report: Path | None, trial_dir: Path | None, 
         "entries": job_entries(rows, dirs),
         "manifest": manifest, "manifest_error": manifest_error, "skip": skip,
         "runs": list(reversed(subdirs(root / "runs"))), "logs": logs, "tests": tests,
-        "trial_dir": trial_dir, "report": report, "issues": issues,
+        "trial_dir": trial_dir, "reports": reports, "issues": issues,
     }
 
 
 def build_dashboard(
-    root: Path, out: Path, *, title: str = "求职 Agent 试跑看板", report: Path | None = None,
+    root: Path, out: Path, *, title: str = "求职 Agent 试跑看板", reports: list[Path] | None = None,
     trial_dir: Path | None = None, tests_logs: list[Path] | None = None,
 ) -> Path:
     root = root.resolve()
     if not root.is_dir():
         raise GuardError(f"Repository root not found: {root}")
-    for path in [report, *(tests_logs or [])]:
-        if path is not None and not path.is_file():
+    for path in [*(reports or []), *(tests_logs or [])]:
+        if not path.is_file():
             raise GuardError(f"File not found: {path}")
     if trial_dir is not None and not trial_dir.is_dir():
         raise GuardError(f"Trial directory not found: {trial_dir}")
-    ctx = collect(root, out, report, trial_dir, list(tests_logs or []))
+    ctx = collect(root, out, list(reports or []), trial_dir, list(tests_logs or []))
     page = Page()
     sections = [
-        ("report", "报告", report_section(ctx)),
+        ("report", "报告", report_section(page, ctx)),
         ("overview", "总览", overview_section(ctx)),
         ("jobs", "岗位", jobs_section(page, ctx)),
         ("variants", "简历版本", variants_section(page, ctx)),
@@ -1630,6 +1893,8 @@ ol.events{list-style:none;margin:0;padding:0}.ev{border-left:3px solid var(--bor
 .badge{font-size:11.5px;font-weight:700;padding:0 6px;border-radius:4px;background:var(--none-bg);color:var(--none);white-space:nowrap}
 .b-command{background:var(--accent);color:var(--accent-text)}.b-message{background:var(--ok-bg);color:var(--ok)}.b-file{background:var(--warn-bg);color:var(--warn)}.b-error{background:var(--bad-bg);color:var(--bad)}
 ul.paths{margin:4px 0;padding-left:20px;font-size:13px}.task{font-weight:700}
+.key-docs h4,.run-groups h4,.stage-info h4{margin:10px 0 2px;font-size:13px;color:var(--muted)}details.run-group{border-top:1px solid var(--border);padding:2px 0}
+.stage-info{border:1px solid var(--border);border-radius:8px;padding:6px 12px;margin:8px 0;background:var(--panel-2)}
 @media (max-width:640px){body{font-size:14px}.hide-sm{display:none}.top h1{font-size:20px}.drawer-panel{padding:0 12px 32px}
 .variants{grid-template-columns:1fr}.previews img{max-width:100%}dl.kv{grid-template-columns:minmax(0,8.5em) minmax(0,1fr);gap:3px 8px}dl.kv dt{overflow-wrap:anywhere}.pdf-frame{height:60vh}}
 """
@@ -1648,13 +1913,14 @@ var drawer=document.getElementById('drawer'),drawerBody=document.getElementById(
 function openJob(i){var tpl=document.getElementById('job-'+i);if(!tpl)return;drawerBody.replaceChildren(tpl.content.cloneNode(true));drawer.hidden=false;document.body.classList.add('noscroll');
 hydrate(drawerBody);var row=document.querySelector('tr.job[data-job="'+i+'"]');if(row)setHash('#job='+encodeURIComponent(row.getAttribute('data-job-id')));
 var close=drawer.querySelector('.drawer-bar [data-close]');if(close)close.focus();}
-function closeJob(){if(drawer.hidden)return;drawer.hidden=true;drawerBody.replaceChildren();document.body.classList.remove('noscroll');setHash('');}
+function closeJob(keepHash){if(drawer.hidden)return;drawer.hidden=true;drawerBody.replaceChildren();document.body.classList.remove('noscroll');if(!keepHash)setHash('');}
 function setHash(h){try{history.replaceState(null,'',h||(location.pathname+location.search));}catch(err){}}
 document.addEventListener('click',function(e){var t=e.target;
 var tab=t.closest('.tab');if(tab){activate(tab);return;}
 var open=t.closest('[data-open-blob]');if(open){var u=blobUrl(open.getAttribute('data-open-blob'));if(u)window.open(u,'_blank');return;}
 var dl=t.closest('[data-download-blob]');if(dl){var a=document.createElement('a');a.href=blobUrl(dl.getAttribute('data-download-blob'));a.download=dl.getAttribute('data-name')||'file';document.body.appendChild(a);a.click();a.remove();return;}
 if(t.closest('[data-close]')){closeJob();return;}
+var link=t.closest('a[href^="#"]');if(link&&link.getAttribute('href').indexOf('#job=')!==0){closeJob(true);return;}
 var f=t.closest('.tl-btn');if(f){var tl=f.closest('.timeline'),k=f.getAttribute('data-filter');tl.querySelectorAll('.tl-btn').forEach(function(b){b.setAttribute('aria-pressed',b===f?'true':'false');});
 tl.querySelectorAll('.ev').forEach(function(ev){ev.hidden=!(k==='all'||ev.getAttribute('data-kind')===k||(k==='failed'&&ev.getAttribute('data-failed')==='1'));});return;}
 var row=t.closest('[data-job]');if(row&&!t.closest('a')){openJob(row.getAttribute('data-job'));}});
@@ -1665,7 +1931,7 @@ rows.forEach(function(r){r.setAttribute('data-text',r.textContent.toLowerCase())
 function filter(){var text=(q.value||'').trim().toLowerCase(),sv=s.value,av=a.value,shown=0;rows.forEach(function(r){var ok=(!text||r.getAttribute('data-text').indexOf(text)>=0)&&(!sv||r.getAttribute('data-source')===sv)&&(!av||r.getAttribute('data-app')===av);r.hidden=!ok;if(ok)shown++;});if(n)n.textContent=shown+' / '+rows.length;}
 if(q){q.addEventListener('input',filter);s.addEventListener('change',filter);a.addEventListener('change',filter);filter();}
 initBoxes(document);
-function route(){if(location.hash.indexOf('#job=')!==0)return;var id=decodeURIComponent(location.hash.slice(5));rows.forEach(function(r){if(r.getAttribute('data-job-id')===id)openJob(r.getAttribute('data-job'));});}
+function route(){if(location.hash.indexOf('#job=')!==0){closeJob(true);return;}var id=decodeURIComponent(location.hash.slice(5));rows.forEach(function(r){if(r.getAttribute('data-job-id')===id)openJob(r.getAttribute('data-job'));});}
 window.addEventListener('hashchange',route);route();
 })();
 """
@@ -1687,9 +1953,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="repository root (default: the folder of this script)")
     parser.add_argument("--out", type=Path, help="output HTML (default: <root>/runs/<today>/dashboard.html)")
     parser.add_argument("--title", default="求职 Agent 试跑看板")
-    parser.add_argument("--report", type=Path, help="Markdown report shown first")
+    parser.add_argument("--report", type=Path, action="append", default=[],
+                        help="Markdown report shown first; repeat for several (one tab each)")
     parser.add_argument("--trial-dir", type=Path,
-                        help="folder with Codex JSONL logs and trial notes (default: newest runs/*/trial)")
+                        help="folder with Codex / Claude Code JSONL logs and trial notes (default: newest runs/*/trial)")
     parser.add_argument("--tests-log", type=Path, nargs="+", action="extend", default=[],
                         help="unittest/pytest output files (default: newest runs/*/tests.log)")
     args = parser.parse_args(argv)
@@ -1705,7 +1972,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Using {label}: {path}")
     try:
         path = build_dashboard(
-            args.root, out, title=args.title, report=args.report,
+            args.root, out, title=args.title, reports=args.report,
             trial_dir=trial_dir, tests_logs=tests_logs,
         )
     except GuardError as error:

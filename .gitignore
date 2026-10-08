@@ -11,7 +11,7 @@
 __pycache__/
 *.pyc
 .DS_Store
-# Personal outputs written outside the default folders (dashboard --out,
+# Personal outputs written outside the default folders (dashboard*.html,
 # render_resume output_dir, copied Codex logs, saved test output).
 dashboard*.html
 preview-*.png

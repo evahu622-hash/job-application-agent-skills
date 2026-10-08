@@ -4,7 +4,8 @@
 
 ## 1. 准备运行环境
 
-- **Python 3.10 或更新版本**。三个脚本只用标准库。macOS 自带的 `/usr/bin/python3` 可能是 3.9：先运行 `python3 --version`，太旧就用 `brew install python` 安装新版本（脚本遇到旧版本会直接提示并退出）。
+- **macOS 先确认有 Homebrew**（下面的 `brew install` 都要用它）：在终端运行 `brew --version`。提示 `command not found` 时，复制 https://brew.sh 首页的一行安装命令运行。安装程序会先说明要做什么、等你按回车，可能要求输入电脑登录密码；缺少 Command Line Tools（`git` 要用）时会顺带安装。装完按安装程序最后 `Next steps` 打印的命令把 `brew` 加入 PATH，再重开终端。
+- **Python 3.10 或更新版本**。三个脚本只用标准库。macOS 自带的 `/usr/bin/python3` 可能是 3.9：先运行 `python3 --version`，太旧就用 `brew install python` 安装新版本（脚本和测试遇到旧版本都会直接提示并退出）。
 - **LibreOffice 和 poppler**（PDF 命令行工具集：`pdftotext`、`pdffonts` 等）：构建和检查简历版本要用。macOS：
 
   ```sh
@@ -13,8 +14,9 @@
   ```
 
   其他系统用对应的包管理器安装，确认终端里能运行 `soffice --version` 和 `pdftotext -v`。若 `soffice` 不在 PATH 中，可在 `variants.json` 的 `renderer.soffice` 写完整路径（macOS 通常是 `/Applications/LibreOffice.app/Contents/MacOS/soffice`）。
-- **Agent**：用 Codex 或 Claude Code 打开**整个仓库文件夹**。Skills 在 `.agents/skills/`（Codex 读取），`.claude/skills` 是指向它的符号链接（Claude Code 读取）。只复制某一个 `SKILL.md` 会缺少 `spec.md` 和脚本。Windows 上若符号链接变成了普通文件，按 [README](README.md#在-codex-和-claude-code-中使用) 复制文件夹。
+- **Agent**：用 Codex 或 Claude Code 打开**整个仓库文件夹**（Claude Code：在终端进入仓库目录再运行 `claude`）。Skills 在 `.agents/skills/`（Codex 读取），`.claude/skills` 是指向它的符号链接（Claude Code 读取）。只复制某一个 `SKILL.md` 会缺少 `spec.md` 和脚本。Windows 上若符号链接变成了普通文件，按 [README](README.md#在-codex-和-claude-code-中使用) 复制文件夹。
 - **浏览器**：只有 `ats: browser` 的来源、登录和真实申请需要。确认 Agent 能操作你打算使用的浏览器，优先使用日常的持久浏览器资料。
+  - **Claude Code** 的浏览器工具来自 Claude in Chrome 扩展。前提：在 Chrome、Edge 或其他 Chromium 浏览器里装好 [Claude in Chrome](https://chromewebstore.google.com/detail/claude/fcoeoabgfenejglbffodgkkbkcdhcgfn) 扩展（1.0.36 及以上）；有 Anthropic 直接订阅（Pro、Max、Team 或 Enterprise），并在 Claude Code 里用 `/login` 登录。用 API key 或 `claude setup-token` 的长期令牌登录时，这项功能始终关闭。启动时用 `claude --chrome`，或在会话里运行 `/chrome` 选 **Enabled by default**（以后不加参数也会接通）。`/chrome` 面板显示 `Status: Enabled` 和 `Extension: Installed` 才算接通。它在你日常的浏览器里打开新标签页，沿用其中的登录状态；第一次操作某个网站前可能弹出以 `Claude in Chrome wants to` 开头的确认，批准即可。（2026-10-08 按 code.claude.com/docs/en/chrome 核对）
 - Windows 用户可用文件管理器完成下述复制；终端命令示例以 macOS/Linux 为例。
 
 ## 2. 创建私有配置
@@ -51,16 +53,19 @@ cp -n examples/resume_variants.json private/resume_variants/variants.json
 | `recency_days` | 只看多少天内发布的岗位。只有 `hard_gates` 里有 `recency` 时才拦截；日期未知时不拦截，但会标出来。 |
 | `work_authorization` / `sponsorship_needed` | 工作许可和是否需要雇主支持的真实情况；不确定就写 `unknown`，不要推断。 |
 | `minimum_salary` | 薪资下限和币种；`unknown` 表示不设薪资门槛。只在 JD 公布了薪资时比较。 |
+| `scoring` | 可选：你自己的评分模型（直接写说明，或指向 `private/` 下的文件）。设了就按它评分；不填就用默认算式（从 100 分起按匹配缺口扣分，见 [spec.md](spec.md#硬条件与匹配缺口)）。 |
 | `shortlist_score_threshold` | 进入候选清单的最低分（0–100）。 |
 | `sources` | 每个来源的 `name`、`url`、`ats`、`scan_every_days`。 |
 
 **如何确定 `ats`**：打开雇主招聘页里的某个职位，看网址。`job-boards.greenhouse.io/…`、`boards.greenhouse.io/…` 或欧洲站 `job-boards.eu.greenhouse.io/…`、`boards.eu.greenhouse.io/…` 是 `greenhouse`，`jobs.lever.co/…` 是 `lever`，`jobs.ashbyhq.com/…` 是 `ashby`，`….jobs.personio.de` 或 `.com` 是 `personio`。招聘页嵌在雇主自己域名里时，申请按钮或页面源码里通常能找到这些域名和公司名（board），例如 `boards.greenhouse.io/embed/job_board?for=公司名`；雇主页网址里的 `?gh_jid=数字` 是 Greenhouse 岗位 ID，可写成 `greenhouse:公司名:数字`。其余网站写 `browser`。写好后可以先测一下：
 
 ```sh
-python3 assistant.py list-ats https://job-boards.greenhouse.io/公司名
+python3 assistant.py list-ats https://job-boards.greenhouse.io/公司名 | head -20
 ```
 
-在 Agent 沙箱里运行时若看到 `Operation not permitted` 或 `ATS API unreachable`，通常是沙箱不允许联网，不代表来源或 `ats` 写错了：Codex 用下文 §6 的 `-c sandbox_workspace_write.network_access=true`（或批准在沙箱外运行该命令）；Claude Code 在提示时允许该命令联网。
+`| head -20` 只显示前 20 行（完整列表可能有几千行）。看到以 `[` 开头、带 `"title"` 的列表就是成功（`[]` 表示该公司目前没有公开岗位）。出现以 `Blocked:` 开头的一行就是失败：`ATS board not found` 通常是 board 名写错了，`ATS API unreachable` 是没有联网（见下一段）。
+
+在 Agent 沙箱里运行时若看到 `Operation not permitted` 或 `ATS API unreachable`，通常是沙箱不允许联网，不代表来源或 `ats` 写错了：Codex 用下文 §6 的 `-c sandbox_workspace_write.network_access=true`（或批准在沙箱外运行该命令）；Claude Code 在提示时允许该命令联网。脚本遇到网络抖动会自动重试一次；在普通终端里仍偶尔看到 `ATS API unreachable` 时，先重跑一次，再检查网络、VPN 或代理。
 
 每次运行都会记录实际尝试了哪些来源；未访问或被拦的来源不能算“无岗位”。
 
@@ -105,9 +110,9 @@ DOCX 声明的字体若本机没装，LibreOffice 会用默认字体顶替，导
    unzip -p private/source/你的母版.docx word/theme/theme1.xml | grep -o 'typeface="[^"]*"' | sort -u
    ```
 
-2. 查本机是否已安装：`fc-list : family | sort -u`（随 poppler 安装），或在“字体册”中搜索。已安装的字体不需要映射。
-3. 未安装的字体映射到已安装的**同尺寸（metric-compatible）字体**，例如 Calibri → Carlito、Cambria → Caladea、Arial → Liberation Sans、Times New Roman → Liberation Serif。macOS 可用 `brew install --cask font-carlito font-caladea font-liberation` 安装。把映射写进 `renderer.font_replacements`，如 `{"Calibri": "Carlito"}`。另外，macOS 上的 LibreOffice 遇到 Arial 时，会用自带的同尺寸字体 Liberation Sans 嵌入 PDF（2026-10-08 实测），版式不变；构建结果里显示为 `note: LibreOffice used metric-compatible Arial -> Liberation Sans`，这是正常现象，不是错误。
-4. 重新构建，看 `build` 输出（或 manifest、结果页）里的检查细节：`fonts_embedded` 列出 PDF 实际嵌入的字体名，确认是你映射的目标字体；映射目标没出现在 PDF 里时会有 `WARNING`（目标字体没装，或被替换的字体在文档里根本没用到）。文本检查要求没有连字字符和 `(cid:` 乱码、词语覆盖率达标，并列出最多 20 个缺失词。缺失词里出现被拆开的 fi/fl 单词，通常说明字体映射还不对。
+2. 查本机是否已安装：`fc-list : family | sort -u`（随 poppler 安装），或在“字体册”中搜索。已安装的字体不需要映射。LibreOffice 自带 Carlito、Caladea 和 Liberation Sans / Serif / Mono（macOS 在 `/Applications/LibreOffice.app/Contents/Resources/fonts/truetype`）：`fc-list` 看不到它们，但可以直接作为映射目标，不用另装。
+3. 未安装的字体映射到已安装的**同尺寸（metric-compatible）字体**，例如 Calibri → Carlito、Cambria → Caladea、Arial → Liberation Sans、Times New Roman → Liberation Serif。这几种 LibreOffice 已自带（见上一步），不必再装；想在其他程序里也用，macOS 可运行 `brew install --cask font-carlito font-caladea font-liberation`。把映射写进 `renderer.font_replacements`，如 `{"Calibri": "Carlito"}`。另外，macOS 上的 LibreOffice 遇到 Arial 时，会用自带的同尺寸字体 Liberation Sans 嵌入 PDF（2026-10-08 实测），版式不变；构建结果里显示为 `note: LibreOffice used metric-compatible Arial -> Liberation Sans`，这是正常现象，不是错误。
+4. 重新构建，看 `build` 输出（或 manifest、结果页）里的检查细节：`fonts_embedded` 列出 PDF 实际嵌入的字体名，确认是你映射的目标字体；映射目标没出现在 PDF 里时会有 `WARNING`（目标字体没装，或被替换的字体在文档里根本没用到）。如果被替换的字体只出现在第 1 步的 `theme1.xml` 里、不在 `fontTable.xml` 里（正文没用到，常见于 Cambria → Caladea），可以删掉这条映射，或忽略这条警告。文本检查要求没有连字字符和 `(cid:` 乱码、词语覆盖率达标，并列出最多 20 个缺失词。缺失词里出现被拆开的 fi/fl 单词，通常说明字体映射还不对。
 
 ## 4. 首次登录各招聘网站
 
@@ -128,23 +133,31 @@ python3 dashboard.py --help
 
 ## 6. 首次试跑
 
-### ATS 来源：可以用 `codex exec` 非交互运行
+### ATS 来源：`codex exec` 非交互运行，或 Claude Code 交互会话
 
 Codex 默认的 `workspace-write` 沙箱**禁止联网**，ATS 接口会读取失败；加 `-c sandbox_workspace_write.network_access=true` 打开（2026-10-08 用 codex-cli 0.160.1 实测）。这会让该次运行里的所有命令都能联网，Skills 只允许访问固定的 ATS 接口。
 
 ```sh
 D=runs/$(date +%F)/trial && mkdir -p "$D"
 codex exec --json -s workspace-write -c sandbox_workspace_write.network_access=true \
-  -o "$D/scout-final.md" \
+  -o "$D/scout_last.md" \
   '用 $job-scout 只扫描 private/targets.yaml 中 ats 不是 browser 的来源：保存 JD 和来源状态，写 fit.md 并运行 check-quotes，写 digest。不申请。' \
   > "$D/scout.jsonl" < /dev/null
 ```
 
-提示词用单引号，避免 shell 把 `$job-scout` 当成变量。**一定要加 `< /dev/null`**：标准输入不是终端时，`codex exec` 会先打印 `Reading additional input from stdin...` 并一直等待输入结束。从脚本、计划任务或后台运行时，如果不加这一句，进程可能卡住数小时而没有任何输出（2026-10-08 试跑实测，卡了 3.5 小时）。`scout.jsonl` 是事件日志，`scout-final.md` 是 Agent 最后的回复，两者都会显示在结果页里。
+提示词用单引号，避免 shell 把 `$job-scout` 当成变量。**一定要加 `< /dev/null`**：标准输入不是终端时，`codex exec` 会先打印 `Reading additional input from stdin...` 并一直等待输入结束。从脚本、计划任务或后台运行时，如果不加这一句，进程可能卡住数小时而没有任何输出（2026-10-08 试跑实测，卡了 3.5 小时）。`scout.jsonl` 是事件日志，`scout_last.md` 是 Agent 最后的回复。结果页的试跑时间线会把同一前缀的 `scout_last.md`（以及可选的提示词文件 `scout_prompt.txt`）和日志放在一起显示。
+
+**Claude Code 用户**在交互会话里扫描 ATS 来源：在仓库目录运行 `claude`，把下面这句作为一条消息发送。`/job-scout` 必须放在消息最前面，Claude Code 才会直接运行这个 Skill；写在句子中间时只算允许它使用，不保证运行。
+
+```text
+/job-scout 只扫描 private/targets.yaml 中 ats 不是 browser 的来源：保存 JD 和来源状态，写 fit.md 并运行 check-quotes，写 digest。不申请。
+```
+
+Claude Code 运行命令、写文件或联网前可能请你批准，照提示允许即可。无人值守的 `claude -p` 写法还没有实测，这里不提供。
 
 ### 浏览器来源、选简历、申请：在交互会话里
 
-在仓库目录启动 Codex（`codex -c sandbox_workspace_write.network_access=true`，或 Codex 应用）或交互式 Claude Code（`claude`，Skills 用 `/job-scout` 等调用；`claude -p` 是非交互的，不能用于浏览器步骤），依次提出：
+在仓库目录启动 Codex（`codex -c sandbox_workspace_write.network_access=true`，或 Codex 应用）或交互式 Claude Code（`claude --chrome`，前提见 §1；`claude -p` 是非交互的，不能用于浏览器步骤），依次提出下面的请求。在 Claude Code 中把 `$技能名` 换成 `/技能名` 并放到消息最前面，例如第 1 条写成 `/job-scout 扫描 ats: browser 的来源，保存原始 JD、提取方式和来源状态，不申请。`
 
 1. “用 `$job-scout` 扫描 `ats: browser` 的来源，保存原始 JD、提取方式和来源状态，不申请。”
 2. “用 `$resume-tailor` 为 `job_id` X 选择已批准的简历版本，写计划、改动和核对记录。”
@@ -153,7 +166,7 @@ codex exec --json -s workspace-write -c sandbox_workspace_write.network_access=t
 
 也可用 `$job-run` 串联，但建议先完成单个来源的试跑。提交前核对岗位、雇主、申请 URL、表单答案、附件、JD 未写明项和未知必填项。只有你明确批准该岗位的最终提交，Agent 才能点击提交。结果不明时调查已有申请，不自动重复点击。
 
-Codex 交互会话的日志在 `~/.codex/sessions/年/月/日/rollout-*.jsonl`；想在结果页里看到过程（包括向你提问、子代理的步骤），把对应文件复制到当天的 `trial` 目录。
+Codex 交互会话的日志在 `~/.codex/sessions/年/月/日/rollout-*.jsonl`；Claude Code 的会话记录在 `~/.claude/projects/目录名/会话ID.jsonl`，目录名是把仓库完整路径里的非字母数字字符都换成 `-`（例如 `/Users/jane/job-application-agent-skills` 对应 `-Users-jane-job-application-agent-skills`；路径里的中文也会变成 `-`）。想在结果页里看到过程（包括向你提问、子代理的步骤），把对应文件复制到当天的 `trial` 目录。
 
 ## 7. 查看结果：一个本地网页
 
@@ -166,7 +179,7 @@ open "$R/dashboard.html"                           # Windows：用 start 打开�
 
 日志放在别处时用 `--trial-dir 目录` 和 `--tests-log 文件` 指定。脚本默认以自己所在的文件夹为仓库根目录，从哪里运行都一样。
 
-页面是一个自带样式和数据的 HTML 文件，包括：概览（各来源状态与申请状态的岗位数、简历版本状态）、`jobs.csv` 表格、每个岗位文件夹里的全部文件（Markdown 渲染、JSON 格式化、PDF 内嵌查看）、简历版本的检查结果和预览图、`runs/` 下的摘要，以及 `--trial-dir` 里的 Codex 事件日志和其他文本。其他参数：`--report 报告.md` 把一份报告放在最上面，`--out` 改输出路径，`--title` 改标题，`--root` 指定仓库根目录。单个超过 8 MB 的文件不内嵌，只给说明。
+页面是一个自带样式和数据的 HTML 文件，包括：概览（私有配置是否已真正填写、各来源状态与申请状态的岗位数、简历版本状态）、`jobs.csv` 表格、每个岗位文件夹里的全部文件（Markdown 渲染、JSON 格式化、PDF 内嵌查看）、简历版本的检查结果和预览图、`runs/` 下的摘要，以及 `--trial-dir` 里的 Codex 或 Claude Code 日志和其他文本。其他参数：`--report 报告.md` 把报告放在最上面（可重复，多份报告各占一个标签页），`--out` 改输出路径（请放在 `runs/` 下，或用 `dashboard` 开头的文件名，否则不会被 Git 忽略），`--title` 改标题，`--root` 指定仓库根目录。单个超过 8 MB 的文件不内嵌，只给说明。
 
 **页面含个人数据**：只在本机打开，不要上传、发布或发给他人。
 

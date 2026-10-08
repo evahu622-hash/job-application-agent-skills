@@ -35,11 +35,11 @@
 | `jobs/JOB_ID/pre-submit.json` | 表单回读和附件核验结果；问题演练时为 `"dry_run": true`。 |
 | `jobs/JOB_ID/application.json` | 提交结果、时间与页面证据。 |
 | `runs/YYYY-MM-DD/digest.md` | 本轮扫描摘要：`targets.yaml` 里**每个**来源的状态（已尝试 / 跳过 / 受阻及原因）与路线（ATS 接口或哪种浏览器）、岗位、评分、待回答问题。同一天再次运行时追加带时间的新段落。 |
-| `runs/YYYY-MM-DD/trial/`、`runs/YYYY-MM-DD/tests.log` | 试跑日志（Codex JSONL 等）和测试输出；`dashboard.py` 默认读取最新一份。 |
+| `runs/YYYY-MM-DD/trial/`、`runs/YYYY-MM-DD/tests.log` | 试跑日志（Codex 或 Claude Code 的 JSONL，可带同一前缀的 `_prompt.txt` 提示词和 `_last.md` 最后回复）和测试输出；`dashboard.py` 默认读取最新一份。 |
 | `runs/YYYY-MM-DD/simulation/` | 虚构 JD 的 SIMULATION 演练：自己的 `jobs.csv` 和 `jobs/`，命令加 `--store runs/YYYY-MM-DD/simulation/jobs.csv`。 |
 | `runs/YYYY-MM-DD/dashboard.html` | `dashboard.py` 生成的本地结果页；含个人数据，不得发布。 |
 
-`job_id`：ATS 来源由 `list-ats` / `fetch-ats` 生成，格式为 `{ats}-{board}-{ats_job_id}`，转小写，`[a-z0-9._-]` 以外的字符换成 `-`；超过 80 个字符时截短 board 并加上 board 的 8 位哈希（结果稳定）。`fetch-ats --job-dir` 的文件夹名必须等于这个 `job_id`。其他来源用 `<站点>-<原站稳定岗位 ID>`（如 `linkedin-4012345678`），否则由规范化后的原始 URL 派生。不能仅凭相似标题合并。
+`job_id`：ATS 来源由 `list-ats` / `fetch-ats` 生成，格式为 `{ats}-{board}-{ats_job_id}`，转小写，`[a-z0-9._-]` 以外的字符换成 `-`；超过 80 个字符时截短 board 并加上 board 的 8 位哈希（结果稳定）。`fetch-ats --job-dir` 必须是 `jobs/` 下以这个 `job_id` 命名的文件夹（`jobs/<job_id>`；SIMULATION 为 `runs/YYYY-MM-DD/simulation/jobs/<job_id>`）。其他来源用 `<站点>-<原站稳定岗位 ID>`（如 `linkedin-4012345678`），否则由规范化后的原始 URL 派生。不能仅凭相似标题合并。
 
 同一岗位换了网址也只能有一个 `job_id`：`upsert-job` 用“岗位键”判断——ATS 岗位 ID（Greenhouse 用全局数字 ID，包括雇主页上的 `?gh_jid=`；Lever、Ashby 用 UUID；Personio 用公司 + ID），否则用去掉 `www.`、末尾斜杠和跟踪参数（`utm_*`、`gh_src`、`ref` 等）的网址。键已属于另一个 `job_id` 时拒绝：`Same posting already tracked under another job_id: X`。申请 URL 只在含 ATS 岗位 ID 时参与比较。
 
@@ -61,16 +61,16 @@ python3 render_resume.py build [--config PATH] [--only ID] [--force]
 python3 render_resume.py approve ID --by TEXT [--config PATH]
 python3 render_resume.py status [--config PATH]
 
-python3 dashboard.py [--root DIR] [--out PATH] [--title TEXT] [--report PATH.md] [--trial-dir DIR] [--tests-log PATH ...]
+python3 dashboard.py [--root DIR] [--out PATH] [--title TEXT] [--report PATH.md]... [--trial-dir DIR] [--tests-log PATH ...]
 ```
 
 - `list-ats` 输出岗位 JSON 数组（标题、地点、`posted_at`、`job_id`、URL 等）；`--recency-days` 时每条带 `recency`。`age_days` 向上取到 0.1 天，所以显示的天数和 `met` / `unmet` 一致。
-- `fetch-ats` 只用 HTTPS 访问固定的 ATS 公共接口，超时 30 秒。接口返回的岗位记为 `active_verified`（公共接口只返回已发布且有申请入口的岗位）。接口回答 404/410，或岗位已不在列表中（Ashby、Personio），记为 `closed`，退出码 0，不改动 `jd.txt`。成功和 `closed` 时都写 `source.json`；其他网络或 HTTP 错误退出码 2、输出 `Blocked: ...`，不写任何文件：状态未知，不能记为 `closed`。不带 `--recency-days` 时沿用旧 `source.json` 里的时效天数，刷新不会丢掉 `recency`。
+- `fetch-ats` 只用 HTTPS 访问固定的 ATS 公共接口，超时 30 秒；网络错误、超时和 HTTP 502/503/504 间隔 2 秒重试一次（`list-ats` 相同）。接口返回的岗位记为 `active_verified`（公共接口只返回已发布且有申请入口的岗位）。接口回答 404/410，或岗位已不在列表中（Ashby、Personio），记为 `closed`，退出码 0，不改动 `jd.txt`。成功时写 `source.json`；`closed` 只在岗位已保存过（已有 `source.json` 或 `jd.txt`）时更新 `source.json`，否则输出 `"saved": false`，不创建任何文件夹或文件；其他网络或 HTTP 错误退出码 2、输出 `Blocked: ...`，不写任何文件：状态未知，不能记为 `closed`。不带 `--recency-days` 时沿用旧 `source.json` 里的时效天数，刷新不会丢掉 `recency`。
 - JD 文本：HTML 实体只解码一次（与浏览器相同）。Greenhouse 的 `content` 是转义过一次的 HTML，先反转义一次再解析；因此 JD 里写着的 `<style>`、`<template>` 等字样会保留为文字，不会吞掉后面的内容。
 - Personio：英文接口（`?language=en`）里某个岗位没有正文时（只有德语等其他语言版本），改读默认语言接口（`/xml`），`source.json` 的 `api_url` 记录实际用的接口。
 - `upsert-job --source-json` 从 `source.json` 读取身份、URL、来源状态和抓取时间，JD 文件为同目录的 `jd.txt`；原有显式参数用法不变。同一岗位已属于另一个 `job_id` 时拒绝（见上文“岗位键”）。
 - `check-quotes` 按段落（空行分段，引文可以跨行）抽出至少 12 个字符的引文：直引号 `"..."`、弯引号 `“...”`、`「...」`、`『...』`，代码里的也算。规范化后必须是该岗位 `jd.txt` 的原文。省略号 `...` 只能用于省略：每一段至少 12 个字符，并按原文顺序出现。段落里有落单的引号也记为缺失。JD 不含中日韩文字时，含中文的引文不可能是原文，列入 `skipped`，不检查。有缺失时退出码 2；一条都没检查时在 stderr 提示。
-- `preflight --variants`：`--variants` 只接受 `private/` 下的 manifest；默认 manifest `private/resume_variants/build/manifest.json` 存在时也一定检查。上传 PDF 的哈希必须是这些 manifest 中 `approved` 版本的 `pdf_sha256`，否则拦截。同一岗位（相同岗位键）在另一个 `job_id` 下已是 `submitted_confirmed` 或 `submission_unknown` 时也拦截。
+- `preflight --variants`：相对路径先按当前目录、再按 `--store` 所在目录查找，实际位置必须在这两处之一的 `private/` 下（所以在仓库根目录运行 SIMULATION 时，`--variants private/resume_variants/build/manifest.json` 照常可用）；`--store` 所在目录下的默认 manifest `private/resume_variants/build/manifest.json` 存在时也一定检查。上传 PDF 的哈希必须是这些 manifest 中 `approved` 版本的 `pdf_sha256`，否则拦截。同一岗位（相同岗位键）在另一个 `job_id` 下已是 `submitted_confirmed` 或 `submission_unknown` 时也拦截。
 - 三个脚本都需要 Python 3.10+，低于该版本时直接提示并退出。
 
 ### 支持的 ATS 公共接口
@@ -95,7 +95,7 @@ python3 dashboard.py [--root DIR] [--out PATH] [--title TEXT] [--report PATH.md]
   - **`unknown`**：只有 JD 提出了要求、而 `targets.yaml` 里对应的候选人信息是 `unknown` 时才用。例如 JD 写明不提供签证支持，而 `work_authorization` 是 `unknown`。
 - **匹配缺口**：工具、方法、“优先”的年限、JD 当作经验描述的行业背景等软要求。它们降低评分并列给候选人看，**不阻止**进入候选清单。
 - **JD 未写明**：先看 `source.json` 的 ATS 元数据 `employment_type`、`workplace_type`、`compensation`，有值就作为元数据引用（不加引号，因为不是 JD 原文）；JD 和元数据都没有的才记为 `not stated`，在申请时再核对。除非 `targets.yaml` 把它设为硬条件，否则不是“未知硬条件”。
-- **评分**（在 `fit.md` 中写出算式）：从 100 分起，JD 标为必须的匹配缺口每项减 15，标为优先或加分的每项减 5，资历或职位类型明显不符（但不属于排除职位）减 20；`not stated` 和未知时效不扣分；最低 0 分。
+- **评分**（在 `fit.md` 中写出算式）：`targets.yaml` 设了 `scoring`（自定义模型或 `private/` 下的文件）时按它评分；否则用默认算式：从 100 分起，JD 标为必须的匹配缺口每项减 15，标为优先或加分的每项减 5，资历或职位类型明显不符（但不属于排除职位）减 20；`not stated` 和未知时效不扣分；最低 0 分。
 - `unmet` 的岗位不进入候选清单。除发布时效外有 `unknown` 硬条件的岗位：集中问使用者，补齐前该岗位列为“待回答”，不进入候选清单和申请。答案写回 `targets.yaml`（语言、工作许可、雇主支持、薪资）；属于申请答案的同时写入 `private/answers.md`；然后重新评估该岗位的 `fit.md`。
 - `fit.md` 只能依据该岗位自己的 `jd.txt` 写；JD 引文一律放在直引号 `"..."` 或弯引号 `“...”` 里；任何引号（包括 `「」`、`『』` 和代码里的引号）都不用于别的用途，强调用**加粗**。写完运行 `check-quotes`，`missing` 中的每一项都必须改正；`fit.md` 引用了 JD 却 `checked: 0`，说明引文没有标出，也要改正。不得跨岗位套用文字。
 
@@ -108,10 +108,10 @@ python3 dashboard.py [--root DIR] [--out PATH] [--title TEXT] [--report PATH.md]
 
 ## 浏览器运行时
 
-- ATS 公共接口不需要浏览器，可以在非交互运行（`codex exec`）中完成；沙箱需要允许联网（见 SETUP.md）。
+- ATS 公共接口不需要浏览器，可以在非交互运行（`codex exec`）中完成；沙箱需要允许联网（见 SETUP.md）。Claude Code 在交互会话中运行，`/job-scout` 放在消息最前面（见 SETUP.md §6）。
 - 浏览器步骤（`ats: browser` 来源、登录、真实申请表）必须在交互会话中运行（Codex 应用/TUI，或交互式 Claude Code 会话；`claude -p` 和 `codex exec` 都是非交互的），让使用者能批准站点权限、登录和处理验证码。
 - 交互会话遇到登录墙或验证码：暂停，请使用者在页面里登录或处理，然后复查一次；仍被拦或处于非交互运行时才记为 `blocked`。检查结果记入 `private/site_sessions.md`。不代填、不索取凭据，不在任何招聘站点注册账号。
-- 浏览器路线：用 Agent 自带的浏览器工具（Codex 浏览器或 Claude in Chrome）。通过 CDP 技能等方式操作使用者日常的浏览器资料，需要使用者对本次运行明确同意。
+- 浏览器路线：用 Agent 自带的浏览器工具（Codex 浏览器或 Claude in Chrome）。通过 CDP 技能等方式操作使用者日常的浏览器资料，需要使用者对本次运行明确同意。Claude in Chrome 属于自带路线：它虽然在使用者日常的 Chrome 里运行、沿用其中的登录状态，但不需要这项同意；`site_sessions.md` 里记为 `Claude in Chrome`。它需要用 `claude --chrome` 启动或在 `/chrome` 中启用（前提见 SETUP.md §1）。
 - 非交互运行中浏览器权限被拒：该来源记为 `blocked`，不找替代路线（不换其他浏览器、不直连 CDP 即 Chrome 调试接口、不用 curl 抓该站）。
 - 招聘聚合站（如 LinkedIn）上的线索，若 Apply 指向支持的 ATS，只在摘要里记为线索，岗位用 `fetch-ats` 入表（雇主页的 `?gh_jid=ID` 写成 `greenhouse:BOARD:ID`），由 ATS 决定 `job_id` 并去重。聚合站页面只有在雇主或 ATS 没有该岗位页面时才算原始页面。遇到访问限制、JD 不完整或岗位/雇主身份不确定时，停止该来源，继续其他来源。
 - 摘要里记录本轮用了哪条路线（ATS 接口，或哪种浏览器）。

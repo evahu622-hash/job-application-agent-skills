@@ -1,4 +1,4 @@
-# 项目记忆模板
+# 项目记忆
 
 本文件只记通用设计决策和验证结论。不要写个人履历、账号、密码、岗位原文或申请内容；实例运行记录放在被 Git 忽略的 `private/`、`jobs/`、`runs/`。
 
@@ -26,13 +26,13 @@
 
 ### v2 审查修订（2026-10-08）
 
-- **硬条件判断**：JD 没提的硬条件记 `met`（“JD silent”）；只有 JD 提出要求、而候选人对应信息是 `unknown` 时才记 `unknown`。时效只有列在 `hard_gates` 里才拦截。评分规则固定，`fit.md` 写出算式。
+- **硬条件判断**：JD 没提的硬条件记 `met`（“JD silent”）；只有 JD 提出要求、而候选人对应信息是 `unknown` 时才记 `unknown`。时效只有列在 `hard_gates` 里才拦截。`targets.yaml` 设了 `scoring` 就按它评分，否则用默认算式；`fit.md` 写出算式。
 - **岗位键去重**：同一岗位换网址（域名别名、跟踪参数、雇主页 `?gh_jid=`）也只有一个 `job_id`；`upsert-job` 拒绝第二个，`preflight` 拦截已在别的 `job_id` 下提交过的同一岗位。
 - **引文核对收紧**：引文可跨行；代码、`「」`、`『』` 里的也检查；省略号每段至少 12 个字符且按顺序；落单引号算缺失；JD 无中文时含中文的引文跳过。非 JD 引文一律不用引号。
 - **JD 文本**：HTML 实体只解码一次（Greenhouse 先反转义一次），JD 中写着的 `<style>` 等字样不再吞掉后文。
 - **简历版本**：替换文字必须忠于事实（日期、数字、雇主、职位不变；团队与个人、计划与完成分开）；`general` 版本可兜底；任何实际重建都使批准作废并提示；只改显示信息不重建；`output_dir` 必须在仓库内，manifest 不写本机绝对路径；`preflight --variants` 只接受 `private/` 下的 manifest，默认 manifest 总会检查。
 - **演练分两种**：真实 JD 的问题演练（`jobs/JOB_ID/`，`dry_run: true`）与虚构 JD 的 SIMULATION（`runs/日期/simulation/`，单独 `--store`）。
-- **浏览器**：交互会话里遇登录墙先请使用者处理再复查；不注册账号；操作日常浏览器资料需使用者同意；聚合站线索指向 ATS 时改用 `fetch-ats`。
+- **浏览器**：交互会话里遇登录墙先请使用者处理再复查；不注册账号；通过 CDP 等方式操作日常浏览器资料需使用者同意（Claude in Chrome 是 Agent 自带路线，虽在日常 Chrome 里运行，也不需要这项同意）；聚合站线索指向 ATS 时改用 `fetch-ats`。
 
 ## 真实站点验证记录
 
@@ -47,9 +47,14 @@
 | 2026-10-07 | 筛选结果 | 条件判断 | T5：几乎所有岗位都成了“人工/未知”：工具、QBR（季度业务回顾）经验等软要求被当成硬条件；JD 未写明（如雇佣类型）被当成候选人事实未知。 | v2：`hard_gates` 白名单、匹配缺口、`not stated` 三分。待验证：同一批岗位重新筛选后的候选清单。 |
 | 2026-10-07 | Codex 沙箱 + LibreOffice | 简历渲染 | T6：LibreOffice 在 Codex 沙箱内无法运行（实测仅 `danger-full-access` 可行），Agent 改用 ReportLab 重新排版简历，而没有渲染 DOCX 模板。 | v2：`render_resume.py` 在普通终端构建、用户批准；Skill 禁止会话内渲染或重排。 |
 | 2026-10-07 | LibreOffice 渲染 | PDF 文本 | T7：默认字体回退使提取文本里的 fi/fl 连字乱码；把模板声明的字体映射到已安装的同尺寸字体后恢复正常。 | v2：`font_replacements` + 连字与词语覆盖率检查；SETUP 说明如何找字体。 |
-| 2026-10-07 | Claude Code | Skill 发现 | T8：Claude Code 不读取 `.agents/skills`，Codex 读取。 | v2：增加 `.claude/skills` 相对链接；Windows 复制文件夹。待验证：Claude Code 新会话中能列出四个 Skills。 |
+| 2026-10-07 | Claude Code | Skill 发现 | T8：Claude Code 不读取 `.agents/skills`，Codex 读取。 | v2：增加 `.claude/skills` 相对链接；Windows 复制文件夹。发现已验证，见本表最后一行。 |
 | 2026-10-08 | Codex `codex exec`（codex-cli 0.160.1） | 沙箱联网 | 默认 `workspace-write` 下访问 Greenhouse 接口报 `Operation not permitted`；加 `-c sandbox_workspace_write.network_access=true` 后返回 200。 | SETUP 已写入该参数；注意它对该次运行的所有命令开放网络。 |
 | 2026-10-08 | Greenhouse 欧洲站 | 接口域名 | `boards-api.eu.greenhouse.io` 在 DNS 中不存在（NXDOMAIN）；`boards-api.greenhouse.io` 对 4 个欧洲站 board 返回与 `boards.eu.greenhouse.io` 相同的列表和单岗位内容。 | 已改为所有 Greenhouse board 都用 `boards-api.greenhouse.io`，并支持 `boards.eu.greenhouse.io` 页面网址。 |
 | 2026-10-08 | Personio 公共接口 | 只有德语版的岗位 | `?language=en` 接口里这类岗位的 `jobDescriptions` 为空；不带语言参数的 `/xml` 有完整正文；`.de` 与 `.com` 返回相同内容。 | `fetch-ats` 遇空正文改读 `/xml` 并在 `api_url` 记录；`.com` 统一记为 `.de`。 |
 | 2026-10-08 | Codex 沙箱（codex-cli 0.160.1） | 单元测试 | 沙箱内 LibreOffice 集成测试报错；沙箱命令带环境变量 `CODEX_SANDBOX=seatbelt`。 | 该测试在此环境变量存在时跳过；完整测试需在普通终端运行。 |
-| 2026-10-08 | Claude Code | Skill 发现（T8） | 用 `claude -p` 复核时登录已过期，未能验证。 | 仍待在交互式 Claude Code 新会话中确认能列出四个 Skills。 |
+| 2026-10-08 | Claude Code | Skill 发现（T8） | 用 `claude -p` 复核时登录已过期，未能验证。 | 已由本表最后一行解决。 |
+| 2026-10-08 | 试跑 R1：ATS 公共接口 + 历史岗位表线索 | 复查已关闭的旧线索 | 已关闭、从未保存过的线索各留下一个只有 `source.json` 的 `jobs/<id>/` 空文件夹（Agent 还为一个受阻线索手写了一个），污染 `jobs/` 和结果页。 | 已修复：这类线索 `fetch-ats` 只输出 `"saved": false`、不建文件夹，`job-scout` 只写进摘要。 |
+| 2026-10-08 | 试跑 R3：后台运行的 `codex exec` | 标准输入 | 打印 `Reading additional input from stdin...` 后等了 3.5 小时，没有任何事件。 | 已修复：SETUP 的命令一律带 `< /dev/null`。 |
+| 2026-10-08 | macOS 上的 LibreOffice | 字体检查 | 映射目标 Arial 没出现在 PDF 里，报 `WARNING`；用一行字的 DOCX 复核，LibreOffice 总是嵌入自带的同尺寸字体 Liberation Sans，版式不变。 | 已修复：已知的同尺寸字体对显示为 `note`，不再报警。 |
+| 2026-10-08 | 真实简历 DOCX | 改标题行 | 标题行段落锚定了照片文本框，原规则一律拒绝修改这类段落，所有改标题的版本都建不出来。 | 已修复：允许修改该段落自己的文字；文本框内的段落和跨过文本框的替换仍然拒绝。 |
+| 2026-10-08 | Claude Code 2.1.289（未登录，无费用） | Skill 发现（T8） | 在仓库里运行 `claude -p hi --output-format stream-json --verbose < /dev/null`，`system/init` 事件的 `skills` 和 `slash_commands` 都列出 job-apply、job-run、job-scout、resume-tailor；空 Git 仓库对照组一个都没有。 | 已解决：经 `.claude/skills` 链接的发现可用。在 Claude Code 里完整运行各 Skill 需要登录，尚未实测。 |

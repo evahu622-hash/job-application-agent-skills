@@ -15,12 +15,12 @@
 
 1. **配置**（一次）：按 [SETUP.md](SETUP.md) 放入原版简历，填写岗位范围、固定答案和事实库。
 2. **构建简历版本**（在普通终端，一次或按需）：`python3 render_resume.py build`，查看 PDF 和预览图后 `python3 render_resume.py approve 版本ID --by "你的名字"`。Agent 不在会话里生成或重排简历。
-3. **找岗**：`$job-scout`。ATS 来源走公共接口，可在 `codex exec` 中无人值守运行（需允许联网，命令见 [SETUP.md](SETUP.md#6-首次试跑)）；其他网站需要交互会话。
+3. **找岗**：`$job-scout`。ATS 来源走公共接口，可在 `codex exec` 中无人值守运行（需允许联网），Claude Code 用户在交互会话中运行（两种写法见 [SETUP.md](SETUP.md#6-首次试跑)）；其他网站需要交互会话。
 4. **选简历**：对选定的 `job_id` 调用 `$resume-tailor`。
 5. **申请**：`$job-apply` 填好表单后停下，你审核后才提交。
 6. **查看结果**：`python3 dashboard.py`，用浏览器打开 `runs/今天日期/dashboard.html`，一页看到配置是否齐全、岗位、每个岗位的全部文件、简历版本，以及最新的试跑日志和测试结果（自动读取 `runs/*/trial/` 和 `runs/*/tests.log`）。该页面含个人数据，只在本机查看。
 
-需要串联时调用 `$job-run`。在 Claude Code 中把 `$` 换成 `/`，例如 `/job-scout`。
+需要串联时调用 `$job-run`。在 Claude Code 中把 `$` 换成 `/`，并把命令放在消息最前面，例如 `/job-scout 只扫描 ATS 来源，不申请`；写在句子中间时不保证会运行该 Skill。
 
 ## 支持的招聘系统（ATS）公共接口
 
@@ -36,13 +36,13 @@
 ## 在 Codex 和 Claude Code 中使用
 
 - **Codex**：用 Codex 打开整个仓库文件夹，Skills 位于 `.agents/skills/`，用 `$job-scout` 等调用。
-- **Claude Code**：Claude Code 读取 `.claude/skills/`。仓库里的 `.claude/skills` 是指向 `../.agents/skills` 的相对符号链接，两边用同一份 Skills，用 `/job-scout` 等调用（Claude Code 能否经链接发现 Skills 尚待新会话实测，见 memory.md）。浏览器步骤要用交互式会话（`claude`），`claude -p` 是非交互的。
+- **Claude Code**：Claude Code 读取 `.claude/skills/`。仓库里的 `.claude/skills` 是指向 `../.agents/skills` 的相对符号链接，两边用同一份 Skills，用 `/job-scout` 等调用（2026-10-08 已验证 Claude Code 能经这个链接发现四个 Skills；在 Claude Code 里完整运行各 Skill 需要登录，尚未实测，见 memory.md）。浏览器步骤要用交互式会话 `claude --chrome`，并需要 Claude in Chrome 扩展和订阅登录（见 [SETUP.md](SETUP.md#1-准备运行环境)）；`claude -p` 是非交互的。
 - **Windows**：Git 可能把符号链接检出成一个普通文本文件。此时删除 `.claude\skills`，再把 `.agents\skills` 整个文件夹复制为 `.claude\skills`（PowerShell：`Remove-Item .claude\skills; Copy-Item -Recurse .agents\skills .claude\skills`）；每次更新仓库后重新复制。
 - 若会话没有识别新 Skills，重新打开项目或新建会话。
 
 ## 下载与测试
 
-[下载 ZIP](https://github.com/evahu622-hash/job-application-agent-skills/archive/refs/heads/main.zip)，或 `git clone https://github.com/evahu622-hash/job-application-agent-skills.git`。需要 Python 3.10+、LibreOffice 和 poppler（一组 PDF 命令行工具；安装见 [SETUP.md](SETUP.md)）。运行 `python3 -m unittest -v` 执行离线测试（在 Codex 沙箱里有一项 LibreOffice 测试会自动跳过）；也可直接复制 [交给 Agent 完成安装的提示词](SETUP.md#9-交给-agent-完成安装的提示词)。
+[下载 ZIP](https://github.com/evahu622-hash/job-application-agent-skills/archive/refs/heads/main.zip)，或 `git clone https://github.com/evahu622-hash/job-application-agent-skills.git`。需要 Python 3.10+、LibreOffice 和 poppler（一组 PDF 命令行工具；安装见 [SETUP.md](SETUP.md)）。先运行 `python3 --version`：低于 3.10（macOS 自带的常是 3.9）时，按 [SETUP.md §1](SETUP.md#1-准备运行环境) 安装新版本。然后运行 `python3 -m unittest -v` 执行离线测试（在 Codex 沙箱里有一项 LibreOffice 测试会自动跳过）；也可直接复制 [交给 Agent 完成安装的提示词](SETUP.md#9-交给-agent-完成安装的提示词)。
 
 ## 文件
 
@@ -62,7 +62,7 @@
 
 - 不保证任意招聘网站都能自动化；第一次先用 1–2 个来源试跑。
 - 浏览器步骤必须在交互会话中运行，以便你批准站点权限、登录和处理验证码；非交互运行中被拒的来源记为 `blocked`，不找替代路线。Agent 不替你注册招聘网站账号。
-- 简历只能从你批准过的版本中选，版本里的每处改动都对应事实 ID，且必须忠于事实。每次重新构建都会让该版本的批准作废，需要重新批准。
+- 简历只能从你批准过的版本中选，版本里的每处改动都对应事实 ID，且必须忠于事实。每次实际重建（`--force`，或改了该版本的输入；输入没变的版本会跳过）都会让该版本的批准作废，需要重新批准。
 - 真实提交需要你针对具体岗位审核并批准；结果不明时不自动重试。`preflight` 通过只代表本地检查通过，不代表网站已收到申请。
 
 许可：[MIT License](LICENSE)。

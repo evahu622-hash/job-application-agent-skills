@@ -13,13 +13,15 @@ from unittest import mock
 from xml.etree import ElementTree
 from xml.sax.saxutils import escape
 
-from assistant import GuardError, sha256_file
+from assistant import GuardError, require_python, sha256_file
 import render_resume
 from render_resume import (
     apply_edit, apply_edits, approve, build, check_invariant, docx_plain_text, font_check,
     font_profile_xcu, image_check, load_config, load_manifest, make_variant_docx,
     paragraph_text, relative, render_pdf, scan_paragraphs, settle_status, soffice_version, status, text_checks,
 )
+
+require_python()  # one clear message on an old Python instead of a TypeError per test
 
 
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"

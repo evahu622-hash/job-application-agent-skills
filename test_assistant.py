@@ -4,8 +4,10 @@ import contextlib
 import io
 import json
 import os
+import ssl
 import tempfile
 import unittest
+import urllib.error
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
@@ -13,8 +15,10 @@ from unittest import mock
 from assistant import (
     GuardError, SourceClosed, check_api_url, check_quotes, fetch_ats, html_to_text, http_get,
     list_ats, main, make_job_id, parse_ats_posting, parse_ats_source, preflight, read_jobs,
-    recency, record_outcome, sha256_file, unescape_greenhouse, upsert_job, write_jobs,
+    recency, record_outcome, require_python, sha256_file, unescape_greenhouse, upsert_job, write_jobs,
 )
+
+require_python()  # one clear message on an old Python instead of a TypeError per test
 
 
 class AssistantTest(unittest.TestCase):
@@ -171,6 +175,34 @@ class AssistantTest(unittest.TestCase):
             preflight(self.store, "site-123", self.resume, self.pre,
                       checked_at=self.CHECKED_AT, variants=inside)
 
+    def test_relative_variants_path_works_from_a_simulation_store(self):
+        self.write_manifest()
+        simulation = self.root / "runs" / "2026-10-08" / "simulation" / "jobs.csv"
+        upsert_job(simulation, job_id="site-123", company="Example", title="Product Manager",
+                   location="Remote", source_url="https://example.com/jobs/123",
+                   apply_url="https://example.com/jobs/123/apply", jd_file=self.jd,
+                   observed_at="2026-09-29T01:00:00Z", source_status="active_verified")
+        spec_path = Path("private/resume_variants/build/manifest.json")  # as spec.md writes it
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(self.root)  # the repository root
+
+        def check(store, variants=spec_path):
+            return preflight(store, "site-123", self.resume, self.pre,
+                             checked_at=self.CHECKED_AT, variants=variants)
+
+        self.assertEqual("ready_for_review", check(simulation)["status"])
+        os.chdir(self.root / "runs")  # not found here: looked up next to the store instead
+        self.assertEqual("ready_for_review", check(self.store)["status"])
+        os.chdir(self.root)
+        self.write_manifest(status="draft")  # the manifest found is the one enforced
+        with self.assertRaisesRegex(GuardError, "not an approved resume variant"):
+            check(simulation)
+        self.write_manifest(path=self.root / "jobs" / "x" / "m.json")
+        (self.root / "private" / "link.json").symlink_to(self.root / "jobs" / "x" / "m.json")
+        for forged in (Path("jobs/x/m.json"), Path("private/link.json"), Path("private/../jobs/x/m.json")):
+            with self.subTest(forged=str(forged)), self.assertRaisesRegex(GuardError, "under private/"):
+                check(simulation, forged)
+
     def test_same_posting_under_another_url_is_not_a_new_job(self):
         self.jd.write_text("JD", encoding="utf-8")
         upsert_job(self.store, job_id="acme-csm", company="Acme", title="CSM", location="Berlin",
@@ -217,6 +249,25 @@ def fake_fetch(responses):
 
 def as_bytes(value):
     return json.dumps(value).encode("utf-8")
+
+
+class ScriptedOpener:
+    """Offline stand-in for urllib's opener: each open() returns the next body or raises the next error."""
+
+    def __init__(self, *outcomes):
+        self.outcomes = list(outcomes)
+        self.opens = 0
+
+    def open(self, request, timeout):
+        self.opens += 1
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return io.BytesIO(outcome)
+
+
+def http_error(code):
+    return urllib.error.HTTPError(GH_JOB_URL, code, "scripted", {}, None)
 
 
 GH_LIST_URL = "https://boards-api.greenhouse.io/v1/boards/exampleco/jobs"
@@ -373,6 +424,36 @@ class AtsTest(unittest.TestCase):
                 http_get(url)
         check_api_url(PERSONIO_URL)
         check_api_url(ASHBY_URL)
+
+    def test_http_get_retries_once_on_transient_errors_only(self):
+        cases = [  # (what the server does on each try, expected result or error, tries)
+            ((http_error(503), b"ok"), b"ok", 2),
+            ((http_error(502), b"ok"), b"ok", 2),
+            ((urllib.error.URLError("temporary DNS failure"), b"ok"), b"ok", 2),
+            ((TimeoutError("timed out"), b"ok"), b"ok", 2),
+            ((ssl.SSLEOFError(8, "EOF occurred in violation of protocol"), b"ok"), b"ok", 2),
+            ((ConnectionResetError(54, "Connection reset by peer"), b"ok"), b"ok", 2),
+            ((http_error(502), http_error(504)), "answered HTTP 504", 2),
+            ((urllib.error.URLError("down"), urllib.error.URLError("still down")), r"unreachable \(still down\)", 2),
+            ((http_error(404),), SourceClosed, 1),
+            ((http_error(410),), SourceClosed, 1),
+            ((http_error(403),), "answered HTTP 403", 1),
+            ((http_error(500),), "answered HTTP 500", 1),
+            ((PermissionError(1, "not permitted"),), "unreachable", 1),
+        ]
+        for outcomes, expected, tries in cases:
+            with self.subTest(outcomes=outcomes):
+                opener, sleeps = ScriptedOpener(*outcomes), []
+                with mock.patch("assistant.urllib.request.build_opener", return_value=opener):
+                    if expected == b"ok":
+                        self.assertEqual(b"ok", http_get(GH_JOB_URL, sleep=sleeps.append))
+                    elif expected is SourceClosed:
+                        with self.assertRaises(SourceClosed):
+                            http_get(GH_JOB_URL, sleep=sleeps.append)
+                    else:
+                        with self.assertRaisesRegex(GuardError, expected):
+                            http_get(GH_JOB_URL, sleep=sleeps.append)
+                self.assertEqual((tries, [2] * (tries - 1)), (opener.opens, sleeps))
 
     def test_list_ats_normalizes_each_ats(self):
         fetch = fake_fetch({
@@ -562,6 +643,14 @@ class AtsTest(unittest.TestCase):
         with self.assertRaisesRegex(GuardError, "--job-dir must be jobs/greenhouse-exampleco-101"):
             fetch_ats("greenhouse:exampleco:101", self.root / "jobs" / "anthropic-admin",
                       fetch=fake_fetch({}), now=self.NOW)
+        for outside in (self.root / "greenhouse-exampleco-101", self.root / "drafts" / "greenhouse-exampleco-101"):
+            with self.assertRaisesRegex(GuardError, "--job-dir must be jobs/greenhouse-exampleco-101"):
+                fetch_ats("greenhouse:exampleco:101", outside, fetch=fake_fetch({}), now=self.NOW)
+            self.assertFalse(outside.exists())
+        simulation = self.root / "runs" / "2026-10-08" / "simulation" / "jobs" / "greenhouse-exampleco-101"
+        fetch = fake_fetch({GH_JOB_URL: as_bytes({**GH_POSTING, "content": GH_CONTENT})})
+        source = fetch_ats("greenhouse:exampleco:101", simulation, fetch=fetch, now=self.NOW)
+        self.assertEqual("active_verified", source["source_status"])
 
     def test_refresh_without_flag_keeps_the_recency_window(self):
         self.fetch_greenhouse(recency_days=7)

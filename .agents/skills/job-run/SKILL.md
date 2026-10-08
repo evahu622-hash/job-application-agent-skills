@@ -10,7 +10,7 @@ Read repository `intent.md`, `spec.md`, and the Skill for each requested stage. 
 ## Runtime
 
 - ATS API scouting (`list-ats`, `fetch-ats`) needs no browser and may run non-interactively (`codex exec`); the sandbox must allow network access.
-- Anything that needs the browser (browser sources, logins, real application forms) must run in an interactive session (Codex app/TUI, or an interactive Claude Code session; `claude -p` and `codex exec` are non-interactive). In a non-interactive run, mark those steps `blocked` and leave them for an interactive session; never work around a denied permission.
+- Anything that needs the browser (browser sources, logins, real application forms) must run in an interactive session (Codex app/TUI, or an interactive Claude Code session with Claude in Chrome, started with `claude --chrome` or enabled in `/chrome`; `claude -p` and `codex exec` are non-interactive). In a non-interactive run, mark those steps `blocked` and leave them for an interactive session; never work around a denied permission.
 - Resume variants are built and approved only by the user, in a normal terminal, with `render_resume.py`. Never run `render_resume.py build` or `approve`, and never render a resume in the agent session.
 
 ## State and failures

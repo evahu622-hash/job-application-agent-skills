@@ -10,8 +10,10 @@ import html
 import http.client
 import json
 import re
+import ssl
 import sys
 import tempfile
+import time
 import unicodedata
 import urllib.error
 import urllib.request
@@ -221,15 +223,22 @@ def default_variants_manifest(store: Path) -> Path:
     return store.parent / "private" / "resume_variants" / "build" / "manifest.json"
 
 
+def resolve_variants(store: Path, variants: Path) -> Path:
+    """A relative --variants is looked up in the working directory, then next to the store (a
+    SIMULATION store lives in runs/DATE/simulation/); its real path must be inside one of their private/."""
+    bases = [Path.cwd(), store.parent]
+    candidates = [variants] if variants.is_absolute() else [base / variants for base in bases]
+    path = next((candidate for candidate in candidates if candidate.exists()), candidates[0]).resolve()
+    if not any(path.is_relative_to((base / "private").resolve()) for base in bases):
+        raise GuardError(f"--variants must be a render_resume.py manifest under private/: {variants}")
+    return path
+
+
 def variant_manifests(store: Path, variants: Path | None) -> list[Path]:
     """Manifests the resume must be approved in: --variants (only under private/) and the default one."""
-    found = []
-    if variants is not None:
-        if not variants.resolve().is_relative_to((store.parent / "private").resolve()):
-            raise GuardError(f"--variants must be a render_resume.py manifest under private/: {variants}")
-        found.append(variants)
+    found = [resolve_variants(store, variants)] if variants is not None else []
     default = default_variants_manifest(store)
-    if default.exists() and (variants is None or default.resolve() != variants.resolve()):
+    if default.exists() and default.resolve() not in found:
         found.append(default)
     return found
 
@@ -462,6 +471,9 @@ def unescape_greenhouse(content: str) -> str:
 
 USER_AGENT = "job-application-agent-skills/2"
 HTTP_TIMEOUT_SECONDS = 30
+RETRY_DELAY_SECONDS = 2  # one retry, for blips that a second request a moment later survives
+TRANSIENT_HTTP = {502, 503, 504}
+TRANSIENT_ERRORS = (urllib.error.URLError, TimeoutError, ssl.SSLEOFError, ConnectionResetError)
 # boards-api.greenhouse.io also serves EU-hosted boards (checked live 2026-10-08);
 # boards-api.eu.greenhouse.io does not exist in DNS.
 API_HOSTS = {"boards-api.greenhouse.io", "api.lever.co", "api.eu.lever.co", "api.ashbyhq.com"}
@@ -619,21 +631,27 @@ class _ApiRedirect(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def http_get(url: str) -> bytes:
-    """GET one public ATS API URL: 404/410 -> SourceClosed, other failures -> GuardError."""
+def http_get(url: str, sleep: Callable[[float], None] = time.sleep) -> bytes:
+    """GET one public ATS API URL: 404/410 -> SourceClosed, other failures -> GuardError.
+
+    A transient failure (network error, timeout, HTTP 502/503/504) is retried once."""
     check_api_url(url)
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     opener = urllib.request.build_opener(_ApiRedirect)
-    try:
-        with opener.open(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
-            return response.read()
-    except urllib.error.HTTPError as error:
-        if error.code in (404, 410):
-            raise SourceClosed(f"HTTP {error.code}") from error
-        raise GuardError(f"ATS API answered HTTP {error.code}; source status unknown: {url}") from error
-    except (urllib.error.URLError, http.client.HTTPException, OSError) as error:
-        reason = getattr(error, "reason", error)
-        raise GuardError(f"ATS API unreachable ({reason}); source status unknown: {url}") from error
+    for retries_left in (1, 0):  # the last try returns or raises
+        try:
+            with opener.open(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
+                return response.read()
+        except urllib.error.HTTPError as error:
+            if error.code in (404, 410):
+                raise SourceClosed(f"HTTP {error.code}") from error
+            if not (retries_left and error.code in TRANSIENT_HTTP):
+                raise GuardError(f"ATS API answered HTTP {error.code}; source status unknown: {url}") from error
+        except (urllib.error.URLError, http.client.HTTPException, OSError) as error:
+            if not (retries_left and isinstance(error, TRANSIENT_ERRORS)):
+                reason = getattr(error, "reason", error)
+                raise GuardError(f"ATS API unreachable ({reason}); source status unknown: {url}") from error
+        sleep(RETRY_DELAY_SECONDS)
 
 
 def utc_z(value: object) -> str | None:
@@ -888,7 +906,8 @@ def fetch_ats(
     """Save one posting's canonical jd.txt and source.json from its public ATS API."""
     board, ats_job_id = parse_ats_posting(posting_url)
     job_id = make_job_id(board.ats, board.name, ats_job_id)
-    if job_dir.name != job_id:  # check-quotes and the dashboard look in jobs/<job_id>/
+    # check-quotes and the dashboard look in jobs/<job_id>/ next to the store
+    if job_dir.name != job_id or job_dir.absolute().parent.name != "jobs":
         raise GuardError(f"--job-dir must be jobs/{job_id} for this posting, not {job_dir}")
     now = now or datetime.now(timezone.utc)
     fetched_at = now.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -1070,7 +1089,8 @@ def main(argv: list[str] | None = None) -> int:
     check.add_argument("job_id")
     check.add_argument("--resume", required=True, type=Path)
     check.add_argument("--pre-submit", required=True, type=Path)
-    check.add_argument("--variants", type=Path, help="Resume variants manifest.json")
+    check.add_argument("--variants", type=Path,
+                       help="Resume variants manifest.json under private/ (relative: cwd, then the --store folder)")
 
     record = commands.add_parser("record-outcome", help="Record observed result; never submits")
     record.add_argument("job_id")
@@ -1078,7 +1098,8 @@ def main(argv: list[str] | None = None) -> int:
     record.add_argument("--pre-submit", required=True, type=Path)
     record.add_argument("--outcome", choices=("confirmed", "unknown"), required=True)
     record.add_argument("--evidence", required=True)
-    record.add_argument("--variants", type=Path, help="Resume variants manifest.json")
+    record.add_argument("--variants", type=Path,
+                        help="Resume variants manifest.json under private/ (relative: cwd, then the --store folder)")
 
     ats_list = commands.add_parser("list-ats", help="List postings from a public ATS job-board API")
     ats_list.add_argument("source_url")
