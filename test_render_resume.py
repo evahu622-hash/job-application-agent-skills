@@ -255,6 +255,11 @@ class RenderSupportTest(unittest.TestCase):
         self.assertIn("1 font(s): Carlito-Bold;", named["detail"])
         self.assertIn("WARNING replacement font(s) not in the PDF: Helvetica", named["detail"])
         self.assertNotIn("WARNING", font_check("".join(carlito), {"Calibri": "Carlito"})["detail"])
+        liberation = fonts.splitlines(keepends=True)[:2] + [
+            "BAAAAA+LiberationSans                TrueType          WinAnsi          yes yes yes     11  0\n"]
+        twin = font_check("".join(liberation), {"Arial Regular": "Arial"})["detail"]
+        self.assertIn("note: LibreOffice used metric-compatible Arial -> Liberation Sans", twin)
+        self.assertNotIn("WARNING", twin)
         images = (
             "page   num  type   width height color comp bpc  enc interp  object ID x-ppi y-ppi size ratio\n"
             "--------------------------------------------------------------------------------------------\n"

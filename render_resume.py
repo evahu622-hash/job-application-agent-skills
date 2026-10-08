@@ -453,6 +453,13 @@ def table_rows(output: str) -> list[list[str]]:
     return [line.split() for line in lines[2:] if line.strip()]
 
 
+METRIC_TWINS = {  # font_key(requested) -> LibreOffice's bundled metric-compatible font
+    "arial": "Liberation Sans", "helvetica": "Liberation Sans",
+    "timesnewroman": "Liberation Serif", "times": "Liberation Serif",
+    "couriernew": "Liberation Mono", "calibri": "Carlito", "cambria": "Caladea",
+}
+
+
 def font_key(name: str) -> str:
     return re.sub(r"[^a-z0-9]", "", name.casefold())
 
@@ -469,8 +476,17 @@ def font_check(pdffonts_output: str, replacements: dict[str, str] | None = None)
     embedded = [font_key(name) for name in names]
     unseen = sorted({target for target in (replacements or {}).values()
                      if not any(name.startswith(font_key(target)) for name in embedded)})
-    if unseen:
-        detail += (f"; WARNING replacement font(s) not in the PDF: {', '.join(unseen)} "
+    # LibreOffice renders some core fonts with its bundled metric-compatible twins
+    # (same glyph widths, so the layout is identical); that is expected, not a fallback.
+    twins = [f"{target} -> {METRIC_TWINS[font_key(target)]}" for target in unseen
+             if font_key(target) in METRIC_TWINS
+             and any(name.startswith(font_key(METRIC_TWINS[font_key(target)])) for name in embedded)]
+    unexplained = [target for target in unseen
+                   if not any(twin.startswith(target + " ->") for twin in twins)]
+    if twins:
+        detail += f"; note: LibreOffice used metric-compatible {', '.join(twins)} (same layout)"
+    if unexplained:
+        detail += (f"; WARNING replacement font(s) not in the PDF: {', '.join(unexplained)} "
                    "(not installed, or the replaced font is unused)")
     return {"ok": bool(rows) and not missing, "detail": detail if rows else "no fonts found"}
 

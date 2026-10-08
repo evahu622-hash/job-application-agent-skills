@@ -106,7 +106,7 @@ DOCX 声明的字体若本机没装，LibreOffice 会用默认字体顶替，导
    ```
 
 2. 查本机是否已安装：`fc-list : family | sort -u`（随 poppler 安装），或在“字体册”中搜索。已安装的字体不需要映射。
-3. 未安装的字体映射到已安装的**同尺寸（metric-compatible）字体**，例如 Calibri → Carlito、Cambria → Caladea、Arial → Liberation Sans、Times New Roman → Liberation Serif。macOS 可用 `brew install --cask font-carlito font-caladea font-liberation` 安装。把映射写进 `renderer.font_replacements`，如 `{"Calibri": "Carlito"}`。
+3. 未安装的字体映射到已安装的**同尺寸（metric-compatible）字体**，例如 Calibri → Carlito、Cambria → Caladea、Arial → Liberation Sans、Times New Roman → Liberation Serif。macOS 可用 `brew install --cask font-carlito font-caladea font-liberation` 安装。把映射写进 `renderer.font_replacements`，如 `{"Calibri": "Carlito"}`。另外，macOS 上的 LibreOffice 遇到 Arial 时，会用自带的同尺寸字体 Liberation Sans 嵌入 PDF（2026-10-08 实测），版式不变；构建结果里显示为 `note: LibreOffice used metric-compatible Arial -> Liberation Sans`，这是正常现象，不是错误。
 4. 重新构建，看 `build` 输出（或 manifest、结果页）里的检查细节：`fonts_embedded` 列出 PDF 实际嵌入的字体名，确认是你映射的目标字体；映射目标没出现在 PDF 里时会有 `WARNING`（目标字体没装，或被替换的字体在文档里根本没用到）。文本检查要求没有连字字符和 `(cid:` 乱码、词语覆盖率达标，并列出最多 20 个缺失词。缺失词里出现被拆开的 fi/fl 单词，通常说明字体映射还不对。
 
 ## 4. 首次登录各招聘网站
