@@ -21,7 +21,7 @@
 
 ## 2. 创建私有配置
 
-在仓库根目录执行（`cp -n` 不会覆盖已有文件）：
+在仓库根目录执行（`cp -n` 不会覆盖已有文件；没用过终端的话，先看 [README 的「终端 30 秒入门」](README.md#终端-30-秒入门mac)）：
 
 ```sh
 mkdir -p private/source private/resume_variants
@@ -212,7 +212,7 @@ open "$R/dashboard.html"                           # Windows：用 start 打开�
 
 ## 9. 交给 Agent 完成安装的提示词
 
-把自己的 DOCX 简历作为附件和下面这段提示词一起发给 Codex 或 Claude Code。也可先发送提示词，让 Agent 索取缺少的资料。
+把自己的 DOCX 简历作为附件和下面这段提示词一起发给 Codex 或 Claude Code。也可先发送提示词，让 Agent 索取缺少的资料。注意：作为附件发给 AI 工具的简历，按该工具自己的数据处理方式处理；`private/` 被 Git 忽略，只保证它不会随正常提交上传到 GitHub。
 
 > 请帮我在这台电脑上安装并配置 https://github.com/evahu622-hash/job-application-agent-skills ，直到可以进行一次真实岗位来源的只读试跑。你可以克隆公开仓库、创建本地私有配置、运行测试和读取 ATS 公共接口。先阅读仓库的 README.md、SETUP.md、intent.md、spec.md、CHANGELOG.md 及四个 SKILL.md；把**整个仓库**放在一个适合长期使用的位置并作为项目打开，保留 Skills、文档与脚本的相对路径。已有目录或个人数据不要覆盖。
 >
