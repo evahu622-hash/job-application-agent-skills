@@ -137,10 +137,10 @@ D=runs/$(date +%F)/trial && mkdir -p "$D"
 codex exec --json -s workspace-write -c sandbox_workspace_write.network_access=true \
   -o "$D/scout-final.md" \
   '用 $job-scout 只扫描 private/targets.yaml 中 ats 不是 browser 的来源：保存 JD 和来源状态，写 fit.md 并运行 check-quotes，写 digest。不申请。' \
-  > "$D/scout.jsonl"
+  > "$D/scout.jsonl" < /dev/null
 ```
 
-提示词用单引号，避免 shell 把 `$job-scout` 当成变量。`scout.jsonl` 是事件日志，`scout-final.md` 是 Agent 最后的回复，两者都会显示在结果页里。
+提示词用单引号，避免 shell 把 `$job-scout` 当成变量。**一定要加 `< /dev/null`**：标准输入不是终端时，`codex exec` 会先打印 `Reading additional input from stdin...` 并一直等待输入结束。从脚本、计划任务或后台运行时，如果不加这一句，进程可能卡住数小时而没有任何输出（2026-10-08 试跑实测，卡了 3.5 小时）。`scout.jsonl` 是事件日志，`scout-final.md` 是 Agent 最后的回复，两者都会显示在结果页里。
 
 ### 浏览器来源、选简历、申请：在交互会话里
 
