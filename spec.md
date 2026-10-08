@@ -108,6 +108,8 @@ python3 dashboard.py [--root DIR] [--out PATH] [--title TEXT] [--report PATH.md]
 
 ## 浏览器运行时
 
+- Cookie 横幅：有拒绝选项（Reject all / 只用必要 Cookie）时选拒绝并继续，记录 `cookies: rejected non-essential`；不点"接受全部"、不接受追踪、不付费；没有拒绝选项的横幅或"付费或接受追踪"墙按同意墙处理。用户不在场且要求不等待时，所有登录、验证、同意墙记为 `blocked`，在 digest 的 **Needs the user** 一节逐站写明原因和需要用户本人做的动作。
+
 - ATS 公共接口不需要浏览器，可以在非交互运行（`codex exec`）中完成；沙箱需要允许联网（见 SETUP.md）。Claude Code 在交互会话中运行，`/job-scout` 放在消息最前面（见 SETUP.md §6）。
 - 浏览器步骤（`ats: browser` 来源、登录、真实申请表）必须在交互会话中运行（Codex 应用/TUI，或交互式 Claude Code 会话；`claude -p` 和 `codex exec` 都是非交互的），让使用者能批准站点权限、登录和处理验证码。
 - 交互会话遇到登录墙或验证码：暂停，请使用者在页面里登录或处理，然后复查一次；仍被拦或处于非交互运行时才记为 `blocked`。检查结果记入 `private/site_sessions.md`。不代填、不索取凭据，不在任何招聘站点注册账号。

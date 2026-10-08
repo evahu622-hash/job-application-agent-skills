@@ -58,3 +58,9 @@ sources:
     url: "https://jobs.example.com/search?q=product+manager"
     ats: browser
     scan_every_days: 7
+  # Employer career sites without a supported ATS API also work as browser sources,
+  # e.g. a large company's own careers search page filtered to your city:
+  # - name: "Example Corp careers"
+  #   url: "https://careers.example-corp.com/search?location=Berlin&q=partnerships"
+  #   ats: browser
+  #   scan_every_days: 7

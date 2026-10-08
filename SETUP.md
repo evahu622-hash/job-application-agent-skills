@@ -168,6 +168,24 @@ Claude Code 运行命令、写文件或联网前可能请你批准，照提示�
 
 Codex 交互会话的日志在 `~/.codex/sessions/年/月/日/rollout-*.jsonl`；Claude Code 的会话记录在 `~/.claude/projects/目录名/会话ID.jsonl`，目录名是把仓库完整路径里的非字母数字字符都换成 `-`（例如 `/Users/jane/job-application-agent-skills` 对应 `-Users-jane-job-application-agent-skills`；路径里的中文也会变成 `-`）。想在结果页里看到过程（包括向你提问、子代理的步骤），把对应文件复制到当天的 `trial` 目录。
 
+### 浏览器找岗失败时怎么排查
+
+招聘网站会按访问者的 IP、登录状态和人机检查决定给不给看。Agent **不会绕过**这些限制：它会把来源记为 `blocked`，写明原因。2026-10-08 在一台"国内电脑 + 日本机房代理"的机器上实测到以下情况，可以对照排查：
+
+| 现象 | 原因 | 怎么办 |
+|---|---|---|
+| LinkedIn 跳到 `linkedin.cn/incareer`，显示 HTTP 451 | LinkedIn 把中国大陆 IP 转到已关闭的中国站。用代理时，常见原因是代理规则让 `linkedin.com` 走了国内直连 | 代理规则里让 `linkedin.com`、`licdn.com` 走海外节点；在代理客户端的"连接"面板确认它们没有走 DIRECT |
+| StepStone 显示 "Access Denied"（Akamai 拦截） | 出口 IP 属于机房或 VPS（`ip-api.com` 显示 `hosting: true`），被网站防火墙直接拒绝 | 改用家庭宽带或手机网络；在德国用家庭网络访问通常不会遇到 |
+| Indeed 显示 "Security Check" | 人机检查，机房 IP 更容易触发 | 在交互会话里由你在浏览器中完成检查，再让 Agent 继续；不行就跳过 |
+| 雇主招聘页弹出 Cookie 同意横幅 | 网站的隐私设置 | 横幅上有"全部拒绝/只用必要 Cookie"时，Agent 会选拒绝后继续（拒绝不是同意，也最保护隐私），并记录下来；只有"接受"按钮时记为受阻，由你决定 |
+| XING 跳回首页或出现付费/同意页 | 搜索结果需要登录或同意追踪 | 是否登录、是否同意由你决定；Agent 不会替你点同意或付费 |
+| 雇主招聘页的申请入口跳到登录页 | 雇主自己的申请系统要求账号 | 只读核验 JD 即可；真正申请时由你登录 |
+| 非交互运行（`codex exec`）中所有浏览器来源都是 `blocked` | Codex 在非交互模式下会自动拒绝浏览器权限 | 浏览器来源放到交互会话里跑；接口来源（ATS）不受影响 |
+
+不想每次都被叫来处理时，可以在请求里加一句："遇到登录墙、验证码、安全检查或同意页不要等我，直接记为 blocked 继续，并在 digest 里列出需要我本人处理的站点和动作。"之后找时间按清单逐个处理。
+
+雇主自己的招聘网站（Google、Microsoft、Apple、TikTok、Amazon 等）通常不需要登录就能浏览。把它们作为 `ats: browser` 来源加进 `targets.yaml`，请求中让 Agent 用站内搜索按城市和关键词查找。
+
 ## 7. 查看结果：一个本地网页
 
 ```sh
