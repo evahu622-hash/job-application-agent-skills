@@ -187,6 +187,41 @@ class MarkdownTest(unittest.TestCase):
         self.assertIn("`**x**`", md_to_html("`` `**x**` ``"))
         self.assertNotIn("<em>", md_to_html("snake_case_name and job_id_here"))
 
+    def test_local_file_links_become_text_unless_they_point_into_a_known_job(self):
+        def hrefs(html):
+            return re.findall(r'href="([^"]*)"', html)
+
+        out = md_to_html("[diff](jobs/example-1/resume-diff.md) [src](/Users/jane/repo/dashboard.py:12) "
+                         "[abs](file:///Users/jane/a.md) [jobs/example-1/fit.md](jobs/example-1/fit.md) "
+                         "[n](notes.md:7) [top](#overview) [web](https://example.com) [m](mailto:a@example.com)")
+        self.assertEqual(["#overview", "https://example.com", "mailto:a@example.com"], hrefs(out))
+        self.assertNotIn("file:", out)
+        for fragment in ('diff <code class="path">jobs/example-1/resume-diff.md</code>',
+                         'src <code class="path">/Users/jane/repo/dashboard.py:12</code>',
+                         'abs <code class="path">/Users/jane/a.md</code>', 'n <code class="path">notes.md:7</code>'):
+            self.assertIn(fragment, out)
+        self.assertIn(' <code class="path">jobs/example-1/fit.md</code>', out)  # label equal to the path: shown once
+        self.assertEqual(1, out.count("jobs/example-1/fit.md"))
+        token = dashboard.PAGE_JOBS.set(frozenset({"example-1"}))
+        try:
+            out = md_to_html("[diff](jobs/example-1/resume-diff.md) [fit](/Users/jane/repo/jobs/example-1/fit.md:3) "
+                             "[cv](../jobs/example-1/upload/Jane_Doe_CV.pdf) [job](jobs/example-1/) "
+                             "[f](file:///Users/jane/repo/jobs/example-1/jd.md) [other](jobs/other-9/fit.md)")
+        finally:
+            dashboard.PAGE_JOBS.reset(token)
+        self.assertEqual(["#job=example-1&amp;file=resume-diff.md", "#job=example-1&amp;file=fit.md",
+                          "#job=example-1&amp;file=upload/Jane_Doe_CV.pdf", "#job=example-1",
+                          "#job=example-1&amp;file=jd.md"], hrefs(out))
+        self.assertIn('<a href="#job=example-1&amp;file=resume-diff.md" class="job-link">diff</a>', out)
+        self.assertIn('other <code class="path">jobs/other-9/fit.md</code>', out)
+
+    def test_first_sentence_of_a_final_message(self):
+        self.assertEqual("Result: done.", dashboard.first_sentence("## **Result**: done. Then more.\nline 2"))
+        self.assertEqual("已选择 account 版本。", dashboard.first_sentence("\n- 已选择 `account` 版本。原因如下"))
+        self.assertEqual("v1.2 is ready", dashboard.first_sentence("```\ncode\n```\nv1.2 is ready"))
+        self.assertEqual("长" * 120 + "…", dashboard.first_sentence("长" * 200))
+        self.assertEqual("", dashboard.first_sentence(""))
+
     def test_lists_interrupt_paragraphs_and_deep_nesting_is_bounded(self):
         out = md_to_html("Gaps:\n- SQL\n- Tableau")
         self.assertIn("<p>Gaps:</p>", out)
@@ -476,15 +511,79 @@ class DashboardBuildTest(unittest.TestCase):
     def test_drawer_closes_on_navigation_hash_change_and_escape(self):
         js = dashboard.JS
         # any other hash (a section link, back/forward, a typed URL) closes the job drawer and keeps that hash
-        self.assertIn("function route(){if(location.hash.indexOf('#job=')!==0){closeJob(true);return;}", js)
+        self.assertIn("function route(){if(location.hash.indexOf('#job=')!==0){closeJob(true);reveal(location.hash);return;}"
+                      "go(location.hash);}", js)
         self.assertIn("window.addEventListener('hashchange',route)", js)
-        # clicking a section link (nav or an in-page #anchor) closes it before the browser jumps there
-        self.assertIn("""var link=t.closest('a[href^="#"]');if(link&&link.getAttribute('href').indexOf('#job=')!==0)"""
-                      "{closeJob(true);return;}", js)
+        # clicking a section link (nav or an in-page #anchor) closes it before the browser jumps there;
+        # a #job= link (from rendered Markdown) opens that job's drawer instead
+        self.assertIn("""var link=t.closest('a[href^="#"]');if(link){var h=link.getAttribute('href');"""
+                      "if(h.indexOf('#job=')===0){e.preventDefault();go(h);}else{closeJob(true);reveal(h);}return;}", js)
         self.assertIn("if(!keepHash)setHash('');", js)
         self.assertIn("if(e.key==='Escape')closeJob();", js)
         page = self.build()
         self.assertIn('<nav class="sections"><a href="#report">', page)
+
+    def test_local_links_in_reports_and_agent_messages_open_the_job_drawer(self):
+        self.report.write_text(
+            "# Trial report\n\nSee [diff](jobs/example-1/resume-diff.md), "
+            f"[fit]({self.root}/jobs/example-1/fit.md:4) and [plan](runs/2026-10-08/trial-plan.md).\n", encoding="utf-8")
+        (self.root / "runs" / "2026-10-08" / "digest.md").write_text("- [orphan](jobs/orphan-2/jd.md)\n", encoding="utf-8")
+        jsonl(self.trial / "R5_events.jsonl", [{"type": "item.completed", "item": {
+            "id": "m", "type": "agent_message", "text": "Wrote [CV](jobs/example-3/resume.pdf)"}}])
+        (self.trial / "R5_last.md").write_text("Saved [fit](/tmp/x/jobs/example-1/fit.md)", encoding="utf-8")
+        page = self.build()
+        report = self.template(page, "Trial report")
+        self.assertIn('<a href="#job=example-1&amp;file=resume-diff.md" class="job-link">diff</a>', report)
+        self.assertIn('href="#job=example-1&amp;file=fit.md"', report)
+        self.assertIn('plan <code class="path">runs/2026-10-08/trial-plan.md</code>', report)
+        self.assertIn('href="#job=orphan-2&amp;file=jd.md"', self.template(page, "digest.md"))  # folder not in jobs.csv
+        trial = page[page.index('id="trial"'):page.index('id="tests"')]
+        self.assertIn('href="#job=example-3&amp;file=resume.pdf"', trial)  # a jobs.csv row without a folder has a drawer
+        self.assertIn('href="#job=example-1&amp;file=fit.md"', trial)
+        self.assertIsNone(re.search(r'href="(?:file:|/|\.|jobs/|runs/)', page))
+        self.assertEqual(frozenset(), dashboard.PAGE_JOBS.get())
+        js = dashboard.JS  # #job=<id>&file=<path> opens the drawer on that file tab, or says the file is missing
+        self.assertIn("k=p.indexOf('&file=')", js)
+        self.assertIn("openJob(r.getAttribute('data-job'),file)", js)
+        self.assertIn("if(file)showFile(file);", js)
+        self.assertIn("'该岗位目录中没有 '+f", js)
+
+    def test_trial_summary_rows_open_and_scroll_to_their_collapsed_card(self):
+        js = dashboard.JS
+        self.assertIn("if(p.tagName==='DETAILS')p.open=true;", js)  # reveal(): open the target card and its parents
+        self.assertIn("var lr=t.closest('tr[data-href]');if(lr){var la=lr.querySelector('a[href^=\"#\"]');if(la)la.click();",
+                      js)
+        section = self.build()
+        section = section[section.index('id="trial"'):section.index('id="tests"')]
+        anchors = re.findall(r'<details class="card log" id="(log-\d+)">', section)
+        self.assertEqual(2, len(anchors))
+        self.assertEqual(anchors, re.findall(r'<tr class="log-row" data-href="#(log-\d+)">', section))
+
+    def test_open_button_uses_a_real_link_then_shows_the_pdf_inline(self):
+        js = dashboard.JS
+        self.assertNotIn("window.open", js)
+        self.assertIn("link.href=u;link.target='_blank';link.rel='noopener';document.body.appendChild(link);", js)
+        # no blur / visibilitychange within 1.5 s means no new tab opened: show the PDF in the card or drawer
+        self.assertIn("if(!left)fallback(btn,u);},1500);", js)
+        self.assertIn("frame=document.createElement('iframe');frame.className='pdf-frame'", js)
+        self.assertIn("note.className='note warn open-note';note.setAttribute('role','status')", js)
+        for text in ("PDF 已显示在下方", "请点「下载」保存后打开", "文件数据缺失，无法打开"):
+            self.assertIn(text, js)
+        page = self.build()
+        variants = page[page.index('id="variants"'):page.index('id="runs"')]
+        self.assertIn('<div class="actions"><button type="button" class="btn" data-open-blob="blob-', variants)
+        self.assertIn('<div class="actions"><button type="button" class="btn" data-open-blob="blob-',
+                      self.template(page, "resume.pdf"))
+
+    def test_job_search_without_matches_shows_a_reset_row(self):
+        page = self.build()
+        jobs = page[page.index('id="jobs"'):page.index('id="variants"')]
+        self.assertIn('<tr id="job-empty" class="empty-row" hidden><td colspan="8">没有匹配的岗位 '
+                      '<button type="button" class="btn ghost" id="job-clear">清除搜索和筛选</button></td></tr></tbody>', jobs)
+        self.assertEqual(8, len(re.findall(r"<th[ >]", jobs)))  # colspan spans every column
+        js = dashboard.JS
+        self.assertIn("if(empty)empty.hidden=shown>0;", js)
+        self.assertIn("clear.addEventListener('click',function(){q.value='';s.value='';a.value='';filter();q.focus();})", js)
 
     def test_runs_show_key_documents_then_collapsed_folders(self):
         run = self.root / "runs" / "2026-10-08"
@@ -517,29 +616,45 @@ class DashboardBuildTest(unittest.TestCase):
     def test_trial_stage_pairs_prompt_time_and_final_message(self):
         jsonl(self.trial / "R4a_events.jsonl", EXEC_EVENTS)
         (self.trial / "R4a_prompt.txt").write_text("$resume-tailor example-1 " + "pick a variant " * 10, encoding="utf-8")
-        (self.trial / "R4a_last.md").write_text("Chose the **account** variant <b>x</b>", encoding="utf-8")
+        (self.trial / "R4a_last.md").write_text("Chose the **account** variant <b>x</b>. It covers the JD.\n\nMore",
+                                                encoding="utf-8")
         (self.trial / "R4a.time").write_text("start 2026-10-08 08:41:50\nexit=1\nend 2026-10-08 08:45:21\n",
                                              encoding="utf-8")
         jsonl(self.trial / "R2_tui_rollout.jsonl", ROLLOUT_EVENTS)
         (self.trial / "R2_prompt.txt").write_text("$job-scout browser sources", encoding="utf-8")
         page = self.build()
         section = page[page.index('id="trial"'):page.index('id="tests"')]
-        row = re.search(r"<tr><td><code>R4a_events\.jsonl</code></td><td>(.*?)</td>", section).group(1)
-        self.assertIn("<code>R4a</code>", row)
-        self.assertIn("$resume-tailor example-1 pick a variant", row)
-        self.assertTrue(row.endswith("…</span>"))
-        self.assertIn("$job-scout browser sources",
-                      re.search(r"<tr><td><code>R2_tui_rollout\.jsonl</code></td><td>(.*?)</td>", section).group(1))
-        self.assertEqual("", re.search(r"<tr><td><code>codex-exec\.jsonl</code></td><td>(.*?)</td>", section).group(1))
-        panel = re.search(r"<strong>R4a_events\.jsonl</strong></summary>(.*?)</details>", section, re.S).group(1)
+
+        def row(name):  # summary-table row -> (card anchor, stage cell); the row and its file link target the card
+            match = re.search(r'<tr class="log-row" data-href="#(log-\d+)"><td><a href="#(log-\d+)"><code>'
+                              + re.escape(name) + r"</code></a></td><td>(.*?)</td>", section)
+            self.assertEqual(match.group(1), match.group(2))
+            return match.group(1), match.group(3)
+
+        def card(anchor):  # (summary line, body up to the first nested </details>)
+            return re.search(f'<details class="card log" id="{anchor}"><summary>(.*?)</summary>(.*?)</details>',
+                             section, re.S).groups()
+
+        anchor, step = row("R4a_events.jsonl")
+        self.assertIn("<code>R4a</code>", step)
+        self.assertIn("$resume-tailor example-1 pick a variant", step)
+        self.assertTrue(step.endswith("…</span>"))
+        self.assertIn("$job-scout browser sources", row("R2_tui_rollout.jsonl")[1])
+        self.assertEqual("", row("codex-exec.jsonl")[1])
+        summary, panel = card(anchor)
+        self.assertEqual('<strong>R4a</strong> <span class="result">Chose the account variant &lt;b&gt;x&lt;/b&gt;.</span>'
+                         ' <code class="muted">R4a_events.jsonl</code>', summary)
         self.assertTrue(panel.startswith('<div class="stage-info">'))
         self.assertLess(panel.index("stage-info"), panel.index('class="timeline"'))
         for fragment in ("2026-10-08 08:41:50", "2026-10-08 08:45:21", '<span class="chip bad">exit 1</span>',
                          "$resume-tailor example-1", "<strong>account</strong>", "&lt;b&gt;x"):
             self.assertIn(fragment, panel)
-        r2 = re.search(r"<strong>R2_tui_rollout\.jsonl</strong></summary>(.*?)</details>", section, re.S).group(1)
+        summary, r2 = card(row("R2_tui_rollout.jsonl")[0])
+        self.assertEqual('<strong>R2</strong> <code class="muted">R2_tui_rollout.jsonl</code>', summary)
         self.assertIn("$job-scout browser sources", r2)
         self.assertNotIn("最终回复", r2)
+        self.assertEqual("<strong>codex-exec.jsonl</strong>", card(row("codex-exec.jsonl")[0])[0])
+        self.assertEqual([], re.findall(r'<details class="card log"[^>]*\bopen\b', section))  # all collapsed
         self.assertNotIn(">R4a_prompt.txt<", section)
         self.assertNotIn(">R4a_last.md<", section)
         self.assertIn(">notes.md<", section)
@@ -671,6 +786,13 @@ class DashboardBuildTest(unittest.TestCase):
         self.assertIn("没有岗位", page)
         self.assertIn("未找到", page)
 
+
+
+class NaturalOrderTest(unittest.TestCase):
+    def test_natural_order_puts_r2_before_r10(self):
+        names = ["R10_events.jsonl", "R1_events.jsonl", "R2_tui_rollout.jsonl", "R4a_events.jsonl"]
+        self.assertEqual(["R1_events.jsonl", "R2_tui_rollout.jsonl", "R4a_events.jsonl", "R10_events.jsonl"],
+                         sorted(names, key=dashboard.natural_key))
 
 if __name__ == "__main__":
     unittest.main()

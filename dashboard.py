@@ -19,8 +19,10 @@ import shlex
 import sys
 import textwrap
 from collections import Counter
+from contextvars import ContextVar
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote, unquote
 
 from assistant import GuardError, atomic_text, require_python
 
@@ -328,6 +330,35 @@ def link_html(href: str, label_html: str) -> str:
     return f'<a href="{esc(href)}" rel="noopener noreferrer"{external}>{label_html}</a>'
 
 
+# Job ids that have a drawer on the page being built; set by build_dashboard.
+PAGE_JOBS: ContextVar[frozenset] = ContextVar("PAGE_JOBS", default=frozenset())
+
+
+def local_path(url: str) -> str | None:
+    """The file path a link target names on this machine (relative, absolute or file:); None for any other link."""
+    cleaned = re.sub(r"[\x00-\x20\x7f]", "", html.unescape(url))
+    if re.match(r"(?i)file:", cleaned):
+        return unquote(re.sub(r"(?i)^file:(?://[^/]*)?", "", cleaned))
+    if not cleaned or cleaned.startswith(("#", "//", "\\", "/\\")):
+        return None
+    if re.match(r"[A-Za-z][A-Za-z0-9+.\-]*:(?!\d+(?::\d+)?$)", cleaned):  # a scheme, but not name.md:12
+        return None
+    return unquote(cleaned)
+
+
+def local_link(path: str, label: str, label_html: str) -> str:
+    """jobs/<id>/<file> of a job on this page opens its drawer (#job=<id>&file=<file>); other paths show as text."""
+    jobs = PAGE_JOBS.get()
+    parts = re.sub(r"(?::\d+){1,2}$", "", path.split("#", 1)[0].split("?", 1)[0]).split("/")
+    for i, part in enumerate(parts[:-1]):
+        if part == "jobs" and parts[i + 1] in jobs:
+            rest = "/".join(p for p in parts[i + 2:] if p and p != ".")
+            href = "#job=" + quote(parts[i + 1], safe="") + (f"&file={quote(rest, safe='/')}" if rest else "")
+            return f'<a href="{esc(href)}" class="job-link">{label_html}</a>'
+    code = f'<code class="path">{esc(path)}</code>'
+    return code if label.strip() in ("", path) else f"{label_html} {code}"
+
+
 def _emphasis(text: str) -> str:
     text = re.sub(r"\*\*(?=\S)(.+?)(?<=\S)\*\*", r"<strong>\1</strong>", text)
     text = re.sub(r"(?<!\w)__(?=\S)(.+?)(?<=\S)__(?!\w)", r"<strong>\1</strong>", text)
@@ -346,6 +377,9 @@ def _inline(text: str) -> str:
     def link(match: re.Match) -> str:
         image, label, url = match.groups()
         label_html = esc(f"[图片: {label}]") if image else _emphasis(esc(label))
+        path = local_path(url)
+        if path is not None:  # a local file opens nothing from this single-file page
+            return keep(local_link(path, label, label_html))
         href = safe_href(url)
         return keep(link_html(href, label_html) if href else label_html)
 
@@ -430,13 +464,19 @@ def list_files(folder: Path, skip: set[Path]) -> list[Path]:
     return found
 
 
+def natural_key(text: str) -> tuple:
+    """Sort R2 before R10: digit runs compare as numbers."""
+    return tuple((0, int(part), "") if part.isdigit() else (1, 0, part.casefold())
+                 for part in re.split(r"(\d+)", text) if part)
+
+
 def ordered_files(folder: Path, skip: set[Path]) -> list[tuple[str, Path]]:
     pairs = [(path.relative_to(folder).as_posix(), path) for path in list_files(folder, skip)]
 
-    def key(pair: tuple[str, Path]) -> tuple[int, int, str]:
+    def key(pair: tuple[str, Path]) -> tuple:
         rel = pair[0]
         rank = FILE_ORDER.index(rel) if rel in FILE_ORDER else len(FILE_ORDER)
-        return rank, rel.count("/"), rel
+        return rank, rel.count("/"), natural_key(rel)
 
     return sorted(pairs, key=key)
 
@@ -1408,7 +1448,10 @@ def jobs_section(page: Page, ctx: dict) -> str:
         table = (
             '<div class="table-wrap"><table class="data jobs"><thead><tr><th>job_id</th><th>公司</th>'
             '<th>职位</th><th class="hide-sm">地点</th><th>来源</th><th>申请</th><th class="hide-sm">发布</th>'
-            f'<th>产物</th></tr></thead><tbody>{"".join(body)}</tbody></table></div>'
+            f'<th>产物</th></tr></thead><tbody>{"".join(body)}'
+            '<tr id="job-empty" class="empty-row" hidden><td colspan="8">没有匹配的岗位 '
+            '<button type="button" class="btn ghost" id="job-clear">清除搜索和筛选</button></td></tr>'
+            "</tbody></table></div>"
         )
     else:
         table = '<p class="muted">没有岗位：jobs.csv 和 jobs/ 都为空。</p>'
@@ -1653,7 +1696,35 @@ def prompt_excerpt(stage: dict, limit: int = 80) -> str:
     return text if len(text) <= limit else text[:limit] + "…"
 
 
-def log_summary_row(log: dict) -> str:
+def first_sentence(text: str, limit: int = 120) -> str:
+    """First prose line of Markdown without block markers, cut at its first sentence end and to `limit` characters."""
+    fenced, line = False, ""
+    for raw in text.splitlines():
+        if _FENCE.match(raw):
+            fenced = not fenced
+        elif raw.strip() and not fenced and not _HR.match(raw):
+            line = raw.strip()
+            break
+    line = re.sub(r"^(?:#{1,6}\s+|>\s?|[-*+]\s+|\d{1,9}[.)]\s+|\[[ xX]\]\s+)+", "", line)
+    line = re.sub(r"\*\*|`", "", line).strip()
+    end = re.search(r"[。！？]|[.!?](?=\s|$)", line)
+    line = line[: end.end()] if end else line
+    return line if len(line) <= limit else line[:limit].rstrip() + "…"
+
+
+def log_title(log: dict) -> str:
+    """Card summary: stage name and the first sentence of its final message, else the log file name."""
+    stage = log.get("stage") or {}
+    if not stage:
+        return f"<strong>{esc(log['name'])}</strong>"
+    result = first_sentence(stage.get("last") or "")
+    return (
+        f'<strong>{esc(stage["stem"])}</strong>' + (f' <span class="result">{esc(result)}</span>' if result else "")
+        + f' <code class="muted">{esc(log["name"])}</code>'
+    )
+
+
+def log_summary_row(index: int, log: dict) -> str:
     counts = log_counts(log)
     stage = log.get("stage") or {}
     step = (
@@ -1661,12 +1732,13 @@ def log_summary_row(log: dict) -> str:
         if stage else ""
     )
     cells = [
-        f"<code>{esc(log['name'])}</code>", step, log["kind"], log["meta"].get("回合数", 0), counts["command"],
-        chip(counts["failed"], "bad" if counts["failed"] else "ok"), counts["message"], counts["paths"],
-        counts["tool"], counts["error"],
+        f'<a href="#log-{index}"><code>{esc(log["name"])}</code></a>', step, log["kind"],
+        log["meta"].get("回合数", 0), counts["command"], chip(counts["failed"], "bad" if counts["failed"] else "ok"),
+        counts["message"], counts["paths"], counts["tool"], counts["error"],
     ]
     usage = f'<td class="hide-sm">{esc(usage_text(log["usage"]))}</td>'
-    return "<tr>" + "".join(f"<td>{cell}</td>" for cell in cells) + usage + "</tr>"
+    row = "".join(f"<td>{cell}</td>" for cell in cells)
+    return f'<tr class="log-row" data-href="#log-{index}">{row}{usage}</tr>'
 
 
 def trial_section(page: Page, ctx: dict) -> str:
@@ -1678,13 +1750,13 @@ def trial_section(page: Page, ctx: dict) -> str:
             '<div class="table-wrap"><table class="data"><thead><tr><th>日志</th><th>阶段 / 提示词</th><th>类型</th>'
             "<th>回合</th><th>命令</th><th>失败命令</th><th>消息</th><th>改动文件</th><th>工具</th><th>错误</th>"
             '<th class="hide-sm">Token</th></tr></thead>'
-            f'<tbody>{"".join(map(log_summary_row, logs))}</tbody></table></div>'
+            f'<tbody>{"".join(log_summary_row(index, log) for index, log in enumerate(logs))}</tbody></table></div>'
         )
     else:
         summary = '<p class="muted">该目录没有 Codex 或 Claude Code 的 JSONL 日志。</p>'
-    details = "".join(
-        f'<details class="card log"{" open" if index == 0 else ""}><summary><strong>{esc(log["name"])}</strong>'
-        f"</summary>{stage_html(log.get('stage') or {})}{render_log(log)}</details>"
+    details = "".join(  # all collapsed: one open log can be thousands of pixels tall
+        f'<details class="card log" id="log-{index}"><summary>{log_title(log)}</summary>'
+        f"{stage_html(log.get('stage') or {})}{render_log(log)}</details>"
         for index, log in enumerate(logs)
     )
     parsed = {log["path"] for log in logs}
@@ -1790,15 +1862,19 @@ def build_dashboard(
         raise GuardError(f"Trial directory not found: {trial_dir}")
     ctx = collect(root, out, list(reports or []), trial_dir, list(tests_logs or []))
     page = Page()
-    sections = [
-        ("report", "报告", report_section(page, ctx)),
-        ("overview", "总览", overview_section(ctx)),
-        ("jobs", "岗位", jobs_section(page, ctx)),
-        ("variants", "简历版本", variants_section(page, ctx)),
-        ("runs", "运行记录", runs_section(page, ctx)),
-        ("trial", "试跑时间线", trial_section(page, ctx)),
-        ("tests", "测试", tests_section(ctx)),
-    ]
+    token = PAGE_JOBS.set(frozenset(job_id for job_id, _, _ in ctx["entries"] if job_id))
+    try:
+        sections = [
+            ("report", "报告", report_section(page, ctx)),
+            ("overview", "总览", overview_section(ctx)),
+            ("jobs", "岗位", jobs_section(page, ctx)),
+            ("variants", "简历版本", variants_section(page, ctx)),
+            ("runs", "运行记录", runs_section(page, ctx)),
+            ("trial", "试跑时间线", trial_section(page, ctx)),
+            ("tests", "测试", tests_section(ctx)),
+        ]
+    finally:
+        PAGE_JOBS.reset(token)
     nav = "".join(f'<a href="#{key}">{label}</a>' for key, label, body in sections if body)
     generated = datetime.now().astimezone().isoformat(timespec="seconds")
     document = (
@@ -1856,7 +1932,9 @@ nav.sections a{white-space:nowrap;padding:4px 12px;border-radius:999px;color:var
 .table-wrap{overflow-x:auto;border:1px solid var(--border);border-radius:10px;background:var(--panel);margin:8px 0}
 table{border-collapse:collapse;width:100%;font-size:14px}th,td{padding:7px 10px;border-bottom:1px solid var(--border);text-align:left;vertical-align:top}
 th{background:var(--panel-2);font-weight:600;white-space:nowrap}tbody tr:last-child td{border-bottom:0}
-tr.job{cursor:pointer}tr.job:hover{background:var(--panel-2)}tr.job[hidden]{display:none}
+tr.job,tr.log-row{cursor:pointer}tr.job:hover,tr.log-row:hover{background:var(--panel-2)}tr.job[hidden],tr.empty-row[hidden]{display:none}
+.empty-row td{text-align:center;padding:16px;color:var(--muted)}.empty-row .btn{margin-left:8px}
+details.log>summary .result{font-weight:400}details.log>summary code{font-size:12px}
 .linkish{font:inherit;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;color:var(--accent);background:none;border:0;padding:0;cursor:pointer;text-align:left;overflow-wrap:break-word}
 td code{overflow-wrap:normal}
 .marks{white-space:nowrap}.mark{display:inline-block;font-size:11px;padding:0 5px;margin:1px;border-radius:4px;border:1px solid var(--border)}
@@ -1910,28 +1988,49 @@ var body=box.querySelector(':scope>.tab-body'),tpl=document.getElementById(tab.g
 function initBoxes(root){root.querySelectorAll('.filebox:not([data-init])').forEach(function(box){if(box.closest('details:not([open])'))return;var t=box.querySelector(':scope>.tabs>.tab');if(t)activate(t);});}
 function hydrate(root){root.querySelectorAll('iframe[data-blob-src]').forEach(function(f){if(!f.getAttribute('src')){var u=blobUrl(f.getAttribute('data-blob-src'));if(u)f.setAttribute('src',u);}});initBoxes(root);}
 var drawer=document.getElementById('drawer'),drawerBody=document.getElementById('drawer-body');
-function openJob(i){var tpl=document.getElementById('job-'+i);if(!tpl)return;drawerBody.replaceChildren(tpl.content.cloneNode(true));drawer.hidden=false;document.body.classList.add('noscroll');
+function openJob(i,file){var tpl=document.getElementById('job-'+i);if(!tpl)return;drawerBody.replaceChildren(tpl.content.cloneNode(true));drawer.hidden=false;document.body.classList.add('noscroll');
 hydrate(drawerBody);var row=document.querySelector('tr.job[data-job="'+i+'"]');if(row)setHash('#job='+encodeURIComponent(row.getAttribute('data-job-id')));
-var close=drawer.querySelector('.drawer-bar [data-close]');if(close)close.focus();}
+var close=drawer.querySelector('.drawer-bar [data-close]');if(close)close.focus();if(file)showFile(file);}
+function showFile(f){var tab=[].filter.call(drawerBody.querySelectorAll('.tab'),function(t){return t.textContent===f;})[0];
+if(tab){activate(tab);tab.scrollIntoView({block:'nearest'});return;}var p=document.createElement('p');p.className='note warn';p.textContent='该岗位目录中没有 '+f+'。';drawerBody.prepend(p);}
+function go(h){var p=h.slice(5),k=p.indexOf('&file='),id,file;try{id=decodeURIComponent(k<0?p:p.slice(0,k));file=k<0?'':decodeURIComponent(p.slice(k+6));}catch(err){return;}
+rows.forEach(function(r){if(r.getAttribute('data-job-id')===id)openJob(r.getAttribute('data-job'),file);});}
+function reveal(h){if(!h||h.charAt(0)!=='#'||h.indexOf('#job=')===0)return;var d;try{d=document.getElementById(decodeURIComponent(h.slice(1)));}catch(err){return;}
+for(var p=d;p;p=p.parentElement){if(p.tagName==='DETAILS')p.open=true;}}
+function openBlob(btn){var u=blobUrl(btn.getAttribute('data-open-blob'));if(!u){fallback(btn,null,'文件数据缺失，无法打开；请重新生成看板。');return;}
+var link=document.createElement('a'),left=false;link.href=u;link.target='_blank';link.rel='noopener';document.body.appendChild(link);
+function away(){left=true;}window.addEventListener('blur',away);document.addEventListener('visibilitychange',away);
+try{link.click();}catch(err){}link.remove();
+setTimeout(function(){window.removeEventListener('blur',away);document.removeEventListener('visibilitychange',away);if(!left)fallback(btn,u);},1500);}
+function fallback(btn,u,msg){var host=btn.closest('.actions')||btn,el=document.getElementById(btn.getAttribute('data-open-blob')),pdf=!!(u&&el&&el.getAttribute('data-mime')==='application/pdf');
+var note=host.parentNode.querySelector(':scope>.open-note');if(!note){note=document.createElement('p');note.className='note warn open-note';note.setAttribute('role','status');host.after(note);}
+var frame=pdf?host.parentNode.querySelector(':scope>iframe.pdf-frame'):null;if(pdf&&!frame){frame=document.createElement('iframe');frame.className='pdf-frame';frame.title='PDF';note.after(frame);}
+if(frame&&!frame.getAttribute('src'))frame.setAttribute('src',u);
+note.textContent=msg||(pdf?'浏览器没有打开新标签页（内嵌浏览器可能拦截了新窗口），PDF 已显示在下方；如果仍是空白，请点「下载」。':'浏览器没有打开新标签页（内嵌浏览器可能拦截了新窗口），请点「下载」保存后打开。');
+(frame||note).scrollIntoView({block:'nearest'});}
 function closeJob(keepHash){if(drawer.hidden)return;drawer.hidden=true;drawerBody.replaceChildren();document.body.classList.remove('noscroll');if(!keepHash)setHash('');}
 function setHash(h){try{history.replaceState(null,'',h||(location.pathname+location.search));}catch(err){}}
 document.addEventListener('click',function(e){var t=e.target;
 var tab=t.closest('.tab');if(tab){activate(tab);return;}
-var open=t.closest('[data-open-blob]');if(open){var u=blobUrl(open.getAttribute('data-open-blob'));if(u)window.open(u,'_blank');return;}
+var open=t.closest('[data-open-blob]');if(open){openBlob(open);return;}
 var dl=t.closest('[data-download-blob]');if(dl){var a=document.createElement('a');a.href=blobUrl(dl.getAttribute('data-download-blob'));a.download=dl.getAttribute('data-name')||'file';document.body.appendChild(a);a.click();a.remove();return;}
 if(t.closest('[data-close]')){closeJob();return;}
-var link=t.closest('a[href^="#"]');if(link&&link.getAttribute('href').indexOf('#job=')!==0){closeJob(true);return;}
+var link=t.closest('a[href^="#"]');if(link){var h=link.getAttribute('href');if(h.indexOf('#job=')===0){e.preventDefault();go(h);}else{closeJob(true);reveal(h);}return;}
+var lr=t.closest('tr[data-href]');if(lr){var la=lr.querySelector('a[href^="#"]');if(la)la.click();return;}
 var f=t.closest('.tl-btn');if(f){var tl=f.closest('.timeline'),k=f.getAttribute('data-filter');tl.querySelectorAll('.tl-btn').forEach(function(b){b.setAttribute('aria-pressed',b===f?'true':'false');});
 tl.querySelectorAll('.ev').forEach(function(ev){ev.hidden=!(k==='all'||ev.getAttribute('data-kind')===k||(k==='failed'&&ev.getAttribute('data-failed')==='1'));});return;}
 var row=t.closest('[data-job]');if(row&&!t.closest('a')){openJob(row.getAttribute('data-job'));}});
 document.addEventListener('keydown',function(e){if(e.key==='Escape')closeJob();});
 document.addEventListener('toggle',function(e){if(e.target.open)initBoxes(e.target);},true);
-var rows=[].slice.call(document.querySelectorAll('tr.job')),q=document.getElementById('job-filter'),s=document.getElementById('job-source'),a=document.getElementById('job-app'),n=document.getElementById('job-count');
+var rows=[].slice.call(document.querySelectorAll('tr.job')),q=document.getElementById('job-filter'),s=document.getElementById('job-source'),a=document.getElementById('job-app'),n=document.getElementById('job-count'),
+empty=document.getElementById('job-empty'),clear=document.getElementById('job-clear');
 rows.forEach(function(r){r.setAttribute('data-text',r.textContent.toLowerCase());});
-function filter(){var text=(q.value||'').trim().toLowerCase(),sv=s.value,av=a.value,shown=0;rows.forEach(function(r){var ok=(!text||r.getAttribute('data-text').indexOf(text)>=0)&&(!sv||r.getAttribute('data-source')===sv)&&(!av||r.getAttribute('data-app')===av);r.hidden=!ok;if(ok)shown++;});if(n)n.textContent=shown+' / '+rows.length;}
+function filter(){var text=(q.value||'').trim().toLowerCase(),sv=s.value,av=a.value,shown=0;rows.forEach(function(r){var ok=(!text||r.getAttribute('data-text').indexOf(text)>=0)&&(!sv||r.getAttribute('data-source')===sv)&&(!av||r.getAttribute('data-app')===av);r.hidden=!ok;if(ok)shown++;});if(n)n.textContent=shown+' / '+rows.length;
+if(empty)empty.hidden=shown>0;}
 if(q){q.addEventListener('input',filter);s.addEventListener('change',filter);a.addEventListener('change',filter);filter();}
+if(clear)clear.addEventListener('click',function(){q.value='';s.value='';a.value='';filter();q.focus();});
 initBoxes(document);
-function route(){if(location.hash.indexOf('#job=')!==0){closeJob(true);return;}var id=decodeURIComponent(location.hash.slice(5));rows.forEach(function(r){if(r.getAttribute('data-job-id')===id)openJob(r.getAttribute('data-job'));});}
+function route(){if(location.hash.indexOf('#job=')!==0){closeJob(true);reveal(location.hash);return;}go(location.hash);}
 window.addEventListener('hashchange',route);route();
 })();
 """
